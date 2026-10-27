@@ -1,0 +1,9 @@
+/target
+.env
+.env.local
+.DS_Store
+/tmp
+/.chrome
+/frontend/node_modules
+/frontend/dist
+*.tsbuildinfo

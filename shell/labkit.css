@@ -1,0 +1,51 @@
+:root{
+  --ink:#0B0B0B;--ink-700:#26262A;--ink-500:#52525B;--ink-300:#A1A1AA;
+  --action:#D85A30;--action-700:#C24E27;--action-300:#ECA88F;--action-soft:#FDF3EF;
+  --status:#2E6BE6;--status-700:#1D4CA6;--status-300:#9DBAF7;--status-soft:#EFF4FE;
+  --paper:#FCFCF9;--surface:#FFFFFF;--sunken:#FAFAF8;--muted:#F4F4F5;
+  --border:#E4E4E7;--border-strong:#D4D4D8;--fg:#0B0B0B;--fg-2:#52525B;--fg-3:#71717A;
+  --danger:#DC2626;--danger-strong:#B91C1C;--danger-soft:#FEF2F2;--warning:#D97706;
+  --r-xs:6px;--r-sm:8px;--r-md:10px;--r-lg:16px;
+  --sans:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI","Helvetica Neue",Arial,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --ease:cubic-bezier(.2,.7,.2,1);
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:transparent;overflow:hidden}
+body{color:var(--fg);font:14px/1.55 var(--sans);-webkit-font-smoothing:antialiased}
+#lab-root{padding:2px 2px 6px}
+p{color:var(--fg-2);font-size:14px;margin:0 0 10px}
+p strong{color:var(--fg)}
+h3,h4{margin:0 0 6px;font-size:15px}
+.eyebrow{font-family:var(--mono);font-size:10.5px;font-weight:500;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-3)}
+.mono{font-family:var(--mono)}.num{font-variant-numeric:tabular-nums}
+.btn{font:600 13px/1 var(--sans);border-radius:var(--r-md);padding:10px 14px;border:1px solid var(--border);cursor:pointer;display:inline-flex;align-items:center;gap:6px;background:var(--surface);color:var(--fg-2);transition:background .18s var(--ease),border-color .18s var(--ease),color .18s var(--ease)}
+.btn:hover{border-color:var(--border-strong);color:var(--fg)}
+.btn.accent{background:var(--action);border-color:var(--action);color:#fff}
+.btn.accent:hover{background:var(--action-700)}
+.btn.sm{padding:7px 11px;font-size:12px}
+.btn[aria-pressed="true"]{background:var(--action-soft);border-color:var(--action-300);color:var(--action-700)}
+.btn:disabled{opacity:.5;cursor:default}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0}
+.grid2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}
+@media(max-width:620px){.grid2{grid-template-columns:1fr}}
+input[type=range]{accent-color:var(--action);width:100%;cursor:pointer}
+.srow{display:grid;grid-template-columns:minmax(90px,140px) 1fr 56px;align-items:center;gap:10px;font-size:13px;color:var(--fg-2);padding:3px 0}
+.srow .val{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right;color:var(--fg);font-size:12.5px}
+.ctrl{border:1px solid var(--border);border-radius:var(--r-lg);padding:12px 14px;background:var(--sunken);margin-bottom:10px}
+select{font:inherit;padding:7px 10px;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--surface)}
+canvas{display:block;width:100%;max-width:100%;height:260px;border:1px solid var(--border);border-radius:var(--r-lg);background:var(--surface)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;margin:10px 0}
+.stat{border:1px solid var(--border);border-radius:var(--r-md);padding:10px 12px;background:var(--surface)}
+.stat .v{font-size:20px;font-weight:800;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
+.stat .k{font-size:11px;color:var(--fg-3)}
+.meter{height:8px;border-radius:99px;background:var(--muted);overflow:hidden;border:1px solid var(--border)}
+.meter i{display:block;height:100%;background:var(--status);transition:width .2s var(--ease)}
+.note{border:1px solid var(--border);border-left:3px solid var(--status);border-radius:var(--r-md);padding:10px 12px;background:var(--sunken);font-size:13.5px;color:var(--fg-2);margin:10px 0}
+.good{color:var(--status-700)}.bad{color:var(--danger-strong)}
+.tag{display:inline-flex;align-items:center;border:1px solid var(--border);border-radius:9999px;padding:3px 10px;font-size:12px;background:var(--surface)}
+.legend{display:flex;gap:14px;font-size:12px;color:var(--fg-3);margin-top:8px;flex-wrap:wrap}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:-1px}
+.pb-fallback{border:1px dashed var(--border-strong);border-radius:var(--r-lg);padding:18px;color:var(--fg-3);font-size:13.5px;background:var(--sunken)}
+svg text{font-family:var(--sans)}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
