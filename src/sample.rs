@@ -1,4 +1,4 @@
-//! A hand-written course with one good lab and four broken ones, for
+//! A hand-written course with three good labs and five broken ones, for
 //! `paper-bro qa-sample`: proof that browser QA catches each failure kind
 //! without spending anything on the model.
 
@@ -16,7 +16,23 @@ pub fn course() -> (Meta, Outline, Vec<Lesson>) {
         license: Some("http://creativecommons.org/licenses/by/4.0/".into()),
         published: None,
     };
-    let labs: [(&str, &str, &str); 6] = [
+    let labs: [(&str, &str, &str); 8] = [
+        (
+            "redraws every frame",
+            r#"<div class="srow"><label for="k">Speed</label><input type="range" id="k" min="1" max="10" value="3"></div><canvas id="c"></canvas>"#,
+            r#"let t = 0, speed = 3;
+function frame() { const ctx = hiDPI($('#c')); const w = $('#c').clientWidth; ctx.fillStyle = '#D85A30'; ctx.fillRect((t * speed) % w, 20, 30, 30); t++; if (t < 400) requestAnimationFrame(frame); }
+PB.bindSliders(v => { speed = v.k; });
+requestAnimationFrame(frame);"#,
+        ),
+        (
+            "shrinks its canvas (the old hiDPI bug)",
+            r#"<div class="srow"><label for="k">Speed</label><input type="range" id="k" min="1" max="10" value="3"></div><canvas id="c"></canvas>"#,
+            r#"const c = $('#c'); let t = 0;
+function frame() { c.style.height = (c.clientHeight - 2) + 'px'; const ctx = c.getContext('2d'); ctx.fillStyle = '#2E6BE6'; ctx.fillRect(t % 200, 5, 20, 10); t++; if (t < 400) requestAnimationFrame(frame); }
+PB.bindSliders(v => { t = 0; });
+requestAnimationFrame(frame);"#,
+        ),
         (
             "probes its sandbox",
             r#"<button class="btn" id="b">Probe</button><p id="o">not probed</p>"#,
@@ -80,7 +96,7 @@ pub fn course() -> (Meta, Outline, Vec<Lesson>) {
         tagline: "A sample,\\nfor testing.".into(),
         lede: "This checks that QA catches broken labs.".into(),
         minutes: 15,
-        chips: vec!["🧪 5 labs".into()],
+        chips: vec!["🧪 8 labs".into()],
         lessons: lessons_plan,
         quiz: (0..4)
             .map(|i| QuizItem {
