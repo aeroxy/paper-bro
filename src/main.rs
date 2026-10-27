@@ -23,6 +23,8 @@ const USAGE: &str = "usage: paper-bro <command>
 
   serve            run the site, the admin listener and the build workers
   build ID         build one paper's course in the foreground (resumes from checkpoints)
+  republish ID     rebuild a finished course's page from its stored lessons with the
+                   current shell, check it in the browser, and update it (no model calls)
   ingest ID        fetch a paper and write the text the model reads to tmp/
   qa-sample [nohang]  run browser QA on a hand-written course with broken labs
   migrate          apply database migrations";
@@ -37,6 +39,10 @@ async fn main() -> Result<()> {
         Some("build") => {
             let id = args.get(1).and_then(|s| arxiv::PaperId::parse(s)).context("usage: build <arxiv id>")?;
             build(&id.id).await
+        }
+        Some("republish") => {
+            let id = args.get(1).and_then(|s| arxiv::PaperId::parse(s)).context("usage: republish <arxiv id>")?;
+            republish(&id.id).await
         }
         Some("ingest") => {
             let id = args.get(1).and_then(|s| arxiv::PaperId::parse(s)).context("usage: ingest <arxiv id>")?;
@@ -158,6 +164,72 @@ async fn build(id: &str) -> Result<()> {
         c.aero_url.unwrap_or_default(),
         c.error.unwrap_or_default()
     );
+    Ok(())
+}
+
+/// Re-assemble a finished course from its stored outline and lessons with
+/// the current shell (labkit, runtime, styles), run browser QA on it, and
+/// publish it in place. The lessons are the ones that were reviewed; nothing
+/// is regenerated, so this costs nothing and changes only the shell.
+async fn republish(id: &str) -> Result<()> {
+    let cfg = config::Config::from_env()?;
+    let app = app::App::new(cfg).await?;
+    let pool = &app.pool;
+    let meta = db::get_paper(pool, id).await?.context("no such paper in the database")?;
+    let row = db::course(pool, id).await?.context("no course for that paper")?;
+    if row.status != "ready" {
+        bail!("{id} is {}, not ready", row.status);
+    }
+    let outline: course::Outline =
+        serde_json::from_str(&db::artifact(pool, id, "outline").await?.context("the outline wasn't kept")?)?;
+    let mut lessons = Vec::new();
+    for i in 1..=outline.lessons.len() {
+        let body = db::artifact(pool, id, &format!("lesson:{i:02}")).await?.with_context(|| format!("lesson {i} wasn't kept"))?;
+        lessons.push(serde_json::from_str::<course::Lesson>(&body)?);
+    }
+    // Figures come from the paper's HTML rendering, which arXiv serves again.
+    let figures = match app.arxiv.html(id, meta.version).await? {
+        Some((url, html)) => ingest::from_latexml(&url, &html)?.figures,
+        None => Vec::new(),
+    };
+    let (model, finished): (Option<String>, Option<chrono::DateTime<chrono::Utc>>) =
+        sqlx::query_as("SELECT model, finished_at FROM courses WHERE arxiv_id = $1").bind(id).fetch_one(pool).await?;
+    let model = model.unwrap_or_default();
+    let built = finished.unwrap_or_else(chrono::Utc::now).format("%-d %B %Y").to_string();
+    let c = course::Course { meta: &meta, outline: &outline, lessons: &lessons, figures: &figures, model: &model, built: &built };
+
+    let labs: Vec<usize> = (0..lessons.len()).filter(|&i| !lessons[i].lab_dropped).collect();
+    let report = qa::run(qa::Input {
+        course_html: course::assemble(&c, qa::ORIGIN),
+        lab_pages: labs.iter().map(|&i| (i + 1, course::lab_page(&c, qa::ORIGIN, i))).collect(),
+        figure_prefix: Some(format!("https://arxiv.org/html/{id}")),
+        chrome: &app.cfg.chrome,
+        screenshots: false,
+    })
+    .await?;
+    let failing: Vec<_> = report.labs.iter().filter(|l| !l.ok).collect();
+    for l in &failing {
+        println!("lab {}: {}", l.lesson, l.problems.join("; "));
+    }
+    for p in &report.page_problems {
+        println!("page: {p}");
+    }
+    if !failing.is_empty() || !report.page_problems.is_empty() {
+        bail!("browser QA found problems; nothing was published");
+    }
+    let origin = if app.cfg.publish { app.cfg.public_origin.clone() } else { format!("http://{}", app.cfg.listen) };
+    let html = course::assemble(&c, &origin);
+    if app.cfg.publish {
+        let page = row.aero_page_id.filter(|p| p != "preview").context("the course has no AERO page to update")?;
+        app.aero.update_page(&page, &html).await?;
+        db::put_artifact(pool, id, "html", &html).await?;
+        println!("republished {id}: {} ({} KB), QA clean on {} labs", row.aero_url.as_deref().unwrap_or(&page), html.len() / 1024, labs.len());
+    } else {
+        std::fs::create_dir_all("tmp")?;
+        let out = format!("tmp/{}.html", arxiv::alias(id));
+        std::fs::write(&out, &html)?;
+        println!("dry run: wrote {out} ({} KB), QA clean on {} labs; PUBLISH=1 updates the page", html.len() / 1024, labs.len());
+    }
     Ok(())
 }
 
