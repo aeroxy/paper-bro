@@ -384,6 +384,17 @@ fn lab_card(c: &Course, i: usize) -> String {
     )
 }
 
+/// The figures lessons refer to that `figures` doesn't have, as
+/// "lesson N: KEY". `figure()` leaves a missing one out without a word.
+pub fn missing_figures(lessons: &[Lesson], figures: &[Figure]) -> Vec<String> {
+    lessons
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| !l.figure.is_empty() && !figures.iter().any(|f| f.key == l.figure))
+        .map(|(i, l)| format!("lesson {}: {}", i + 1, l.figure))
+        .collect()
+}
+
 fn figure(c: &Course, lesson: &Lesson) -> String {
     let Some(f) = c.figures.iter().find(|f| !lesson.figure.is_empty() && f.key == lesson.figure) else {
         return String::new();
@@ -548,6 +559,23 @@ mod tests {
         }
         assert!(clean.contains(r#"<a href="https://arxiv.org/abs/1" rel="noopener noreferrer">ok</a>"#), "{clean}");
         assert!(clean.contains(r#"class="callout""#));
+    }
+
+    #[test]
+    fn missing_figures_names_each_lesson_whose_figure_is_gone() {
+        let lesson = |figure: &str| Lesson {
+            prose_html: String::new(),
+            figure: figure.into(),
+            figure_note: String::new(),
+            lab_html: String::new(),
+            lab_css: String::new(),
+            lab_js: String::new(),
+            lab_dropped: false,
+        };
+        let figures = [Figure { key: "F1".into(), url: "https://arxiv.org/html/x/f1.png".into(), caption: String::new() }];
+        let lessons = [lesson("F1"), lesson(""), lesson("F2a")];
+        assert_eq!(missing_figures(&lessons, &figures), ["lesson 3: F2a"]);
+        assert!(missing_figures(&lessons[..2], &figures).is_empty());
     }
 
     #[test]

@@ -192,6 +192,12 @@ async fn republish(id: &str) -> Result<()> {
         Some((url, html)) => ingest::from_latexml(&url, &html)?.figures,
         None => Vec::new(),
     };
+    // A lesson finds its figure by key. If arXiv's rendering has changed or
+    // gone, stop rather than publish the course without those figures.
+    let missing = course::missing_figures(&lessons, &figures);
+    if !missing.is_empty() {
+        bail!("arXiv no longer serves figures the lessons use ({}); nothing was published", missing.join(", "));
+    }
     let (model, finished): (Option<String>, Option<chrono::DateTime<chrono::Utc>>) =
         sqlx::query_as("SELECT model, finished_at FROM courses WHERE arxiv_id = $1").bind(id).fetch_one(pool).await?;
     let model = model.unwrap_or_default();
