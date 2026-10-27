@@ -82,8 +82,12 @@ impl App {
             }
             Err(e) => log::warn!("[{id}] couldn't record event: {e:#}"),
         }
-        if let Some(c) = self.courses.write().unwrap().get_mut(id) {
-            c.stage = Some(stage.to_string());
+        // The stage is public (the paper API shows it), so private event
+        // kinds never become it.
+        if !crate::web::PRIVATE_STAGES.contains(&stage) {
+            if let Some(c) = self.courses.write().unwrap().get_mut(id) {
+                c.stage = Some(stage.to_string());
+            }
         }
     }
 
