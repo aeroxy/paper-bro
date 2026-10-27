@@ -368,7 +368,7 @@ async fn paper_page(State(app): AppState, Path(raw): Path<String>, Query(q): Que
             }
         }
     }
-    asset("index.html")
+    index(&app)
 }
 
 /// Dry-run only: serve a finished course from the database.
@@ -385,13 +385,34 @@ async fn preview(State(app): AppState, Path(alias): Path<String>) -> Response {
     }
 }
 
-async fn static_file(uri: Uri) -> Response {
+async fn static_file(State(app): AppState, uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     let path = path.strip_prefix("paper-bro/").unwrap_or(path);
-    if !path.is_empty() && Assets::get(path).is_some() {
+    if !path.is_empty() && path != "index.html" && Assets::get(path).is_some() {
         return asset(path);
     }
-    asset("index.html")
+    index(&app)
+}
+
+/// The app's page, with the analytics tag when `GA_ID` is set.
+fn index(app: &App) -> Response {
+    let (Some(id), Some(file)) = (&app.cfg.ga_id, Assets::get("index.html")) else {
+        return asset("index.html");
+    };
+    let html = with_analytics(&String::from_utf8_lossy(&file.data), id);
+    ([(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")], html).into_response()
+}
+
+/// The stock gtag.js bootstrap, the same one AERO's pages carry, right after
+/// `<head>`. GA's history tracking counts the app's client-side page changes.
+fn with_analytics(html: &str, id: &str) -> String {
+    let tag = format!(
+        r#"<script async src="https://www.googletagmanager.com/gtag/js?id={id}"></script><script>window.dataLayer=window.dataLayer||[];function gtag(){{dataLayer.push(arguments)}}gtag("js",new Date());gtag("config","{id}");</script>"#
+    );
+    let at = html.find("<head>").map_or(0, |i| i + "<head>".len());
+    let mut out = html.to_string();
+    out.insert_str(at, &tag);
+    out
 }
 
 fn asset(path: &str) -> Response {
@@ -467,4 +488,16 @@ async fn admin_remove(State(app): AppState, Path(raw): Path<String>) -> Response
     let _ = app.refresh(&id.id).await;
     app.emit(&id.id, "removed", "Removed by an admin").await;
     "removed\n".into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_analytics_tag_goes_right_after_head() {
+        let out = with_analytics(r#"<!doctype html><html lang="en"><head><meta charset="utf-8"></head></html>"#, "G-TEST1");
+        assert!(out.starts_with(r#"<!doctype html><html lang="en"><head><script async src="https://www.googletagmanager.com/gtag/js?id=G-TEST1"></script>"#), "{out}");
+        assert!(out.contains(r#"gtag("config","G-TEST1");</script><meta charset="utf-8">"#), "{out}");
+    }
 }
