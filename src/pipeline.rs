@@ -289,6 +289,8 @@ impl Job {
             let lab_broken = !banned(&lessons[*i]).is_empty() || last.lab(i + 1).is_some_and(|r| !r.ok);
             if lab_broken {
                 lessons[*i].lab_dropped = true;
+                // Saved, so a later republish leaves the lab out too.
+                self.save(&format!("lesson:{:02}", i + 1), &lessons[*i]).await?;
                 self.app.emit(&self.id, "repair", &format!("Lesson {} ships without its lab", i + 1)).await;
             }
             let what = if lab_broken { "lab dropped" } else { "open after two rounds" };
