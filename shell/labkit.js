@@ -26,7 +26,12 @@
     if (!(w > 0 && h > 0)) throw new Error('hiDPI: the canvas has zero size');
     var d = window.devicePixelRatio || 1;
     cv.width = Math.round(w * d); cv.height = Math.round(h * d);
-    cv.style.height = h + 'px';
+    // clientHeight leaves out the border, but under box-sizing: border-box
+    // the style height includes it. Add it back, or every redraw (a lab
+    // animating, a plot following a slider) shrinks the canvas until it's gone.
+    var cs = getComputedStyle(cv);
+    var border = cs.boxSizing === 'border-box' ? parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth) : 0;
+    cv.style.height = (h + border) + 'px';
     var c = cv.getContext('2d'); c.setTransform(d, 0, 0, d, 0, 0); return c;
   };
 
@@ -207,6 +212,8 @@
     var cs = $$('canvas');
     await wait(150);
     var before = snap(cs), textBefore = document.body.innerText;
+    var heights = function () { return cs.map(function (c) { return c.clientHeight; }); };
+    var samples = [heights()];
     var controls = $$('input[type=range],input[type=checkbox],input[type=radio],select,button:not([disabled])').slice(0, 40);
     for (var k = 0; k < controls.length; k++) {
       var el = controls[k];
@@ -219,20 +226,32 @@
           el.dispatchEvent(new Event('input', { bubbles: true }));
           el.dispatchEvent(new Event('change', { bubbles: true }));
           await wait(30);
+          samples.push(heights());
         }
       } else if (el.tagName === 'SELECT') {
-        for (var o = 0; o < el.options.length; o++) { el.selectedIndex = o; el.dispatchEvent(new Event('change', { bubbles: true })); await wait(30); }
-      } else { el.click(); await wait(80); }
+        for (var o = 0; o < el.options.length; o++) { el.selectedIndex = o; el.dispatchEvent(new Event('change', { bubbles: true })); await wait(30); samples.push(heights()); }
+      } else { el.click(); await wait(80); samples.push(heights()); }
     }
     await wait(400);
+    samples.push(heights());
+    await wait(400);
+    samples.push(heights());
     var after = snap(cs), textAfter = document.body.innerText;
     var blank = [];
     after.forEach(function (s, i) { if (s === 'blank' || s === 'zero') blank.push(i); });
     var changed = textAfter !== textBefore || after.some(function (s, i) { return s !== before[i]; });
     var bad = textAfter.match(/\bNaN\b|\bundefined\b|\bInfinity\b|\[object Object\]/g) || [];
+    // A canvas may resize once when a lab first draws it. One whose height
+    // drops again and again across the run shrinks on every redraw.
+    var shrunk = [];
+    cs.forEach(function (c, i) {
+      var drops = 0;
+      for (var j = 1; j < samples.length; j++) if (samples[j][i] < samples[j - 1][i]) drops++;
+      if (drops >= 3) shrunk.push(i);
+    });
     return {
       errors: errors.slice(), canvases: cs.length, blank: blank, controls: controls.length,
-      responsive: controls.length === 0 || changed,
+      responsive: controls.length === 0 || changed, shrunk: shrunk,
       badText: bad.filter(function (v, i) { return bad.indexOf(v) === i; })
     };
   };

@@ -337,6 +337,9 @@ async fn check_lab(browser: &Browser, served: &Arc<Served>, n: usize, screenshot
                 if let Some(b) = t["blank"].as_array().filter(|b| !b.is_empty()) {
                     r.problems.push(format!("{} of {} canvases stayed blank", b.len(), t["canvases"]));
                 }
+                if let Some(sh) = t["shrunk"].as_array().filter(|s| !s.is_empty()) {
+                    r.problems.push(format!("{} canvas(es) kept shrinking while the controls were used", sh.len()));
+                }
                 if t["responsive"] == Value::Bool(false) {
                     r.problems.push(format!("moving the {} controls changed nothing on screen", t["controls"]));
                 }
