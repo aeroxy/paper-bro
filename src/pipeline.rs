@@ -316,8 +316,14 @@ impl Job {
         db::put_artifact(&app.pool, &self.id, "html", &html).await?;
         let alias = arxiv::alias(&self.id);
         let (page_id, url) = if cfg.publish {
-            let existing = app.course(&self.id).and_then(|c| c.aero_page_id).filter(|p| p != "preview");
-            let p = app.aero.publish(existing.as_deref(), &alias, &html).await?;
+            // The page we already have, addressed relative to AERO's origin
+            // as AERO addresses it.
+            let existing = app.course(&self.id).and_then(|c| {
+                let id = c.aero_page_id.filter(|p| p != "preview")?;
+                let url = c.aero_url?.strip_prefix(cfg.public_origin.as_str())?.to_string();
+                Some(crate::aero::Page { id, url })
+            });
+            let p = app.aero.publish(existing.as_ref(), &alias, &html).await?;
             (p.id, format!("{}{}", cfg.public_origin, p.url))
         } else {
             ("preview".to_string(), format!("{origin}/paper-bro/preview/{alias}"))
