@@ -1,4 +1,4 @@
-//! A hand-written course with three good labs and five broken ones, for
+//! A hand-written course with four good labs and six broken ones, for
 //! `paper-bro qa-sample`: proof that browser QA catches each failure kind
 //! without spending anything on the model.
 
@@ -16,7 +16,7 @@ pub fn course() -> (Meta, Outline, Vec<Lesson>) {
         license: Some("http://creativecommons.org/licenses/by/4.0/".into()),
         published: None,
     };
-    let labs: [(&str, &str, &str); 8] = [
+    let labs: [(&str, &str, &str); 10] = [
         (
             "redraws every frame",
             r#"<div class="srow"><label for="k">Speed</label><input type="range" id="k" min="1" max="10" value="3"></div><canvas id="c"></canvas>"#,
@@ -32,6 +32,13 @@ requestAnimationFrame(frame);"#,
 function frame() { c.style.height = (c.clientHeight - 2) + 'px'; const ctx = c.getContext('2d'); ctx.fillStyle = '#2E6BE6'; ctx.fillRect(t % 200, 5, 20, 10); t++; if (t < 400) requestAnimationFrame(frame); }
 PB.bindSliders(v => { t = 0; });
 requestAnimationFrame(frame);"#,
+        ),
+        (
+            "collapses to nothing",
+            r#"<div class="srow"><label for="k">Width</label><input type="range" id="k" min="1" max="10" value="3"></div><canvas id="c"></canvas>"#,
+            r#"const c = $('#c'), ctx = c.getContext('2d');
+PB.bindSliders(v => { ctx.clearRect(0, 0, c.width, c.height); ctx.fillStyle = '#D85A30'; ctx.fillRect(0, 0, 20 * v.k, 40); });
+c.style.height = '0px';"#,
         ),
         (
             "probes its sandbox",
@@ -50,6 +57,11 @@ requestAnimationFrame(frame);"#,
             "works",
             r#"<div class="ctrl"><div class="srow"><label for="k">Steepness</label><input type="range" id="k" min="0.5" max="4" step="0.5" value="1"><span class="val" data-show="k" data-digits="1"></span></div></div><canvas id="c"></canvas>"#,
             r#"PB.bindSliders(v => { const pts = []; for (let x = -5; x <= 5; x += 0.25) pts.push([x, 1 / (1 + Math.exp(-v.k * x))]); PB.plot($('#c'), {series: [{points: pts, label: 'sigmoid'}], x: {label: 'input'}, y: {min: 0, max: 1}}); });"#,
+        ),
+        (
+            "resizes with its controls",
+            r#"<div class="srow"><label for="a">Rows</label><input type="range" id="a" min="1" max="8" step="1" value="4"></div><div class="srow"><label for="b">Zoom</label><input type="range" id="b" min="1" max="4" step="1" value="2"></div><canvas id="c"></canvas>"#,
+            r#"PB.bindSliders(v => { const c = $('#c'), ctx = hiDPI(c, c.clientWidth, 260 - v.a * 15 - v.b * 10); ctx.fillStyle = '#2E6BE6'; ctx.fillRect(10, 10, 40 * v.b, 20); });"#,
         ),
         ("throws", r#"<div id="out"></div>"#, r#"$('#missing').textContent = 'x';"#),
         (
@@ -96,7 +108,7 @@ requestAnimationFrame(frame);"#,
         tagline: "A sample,\\nfor testing.".into(),
         lede: "This checks that QA catches broken labs.".into(),
         minutes: 15,
-        chips: vec!["🧪 8 labs".into()],
+        chips: vec!["🧪 10 labs".into()],
         lessons: lessons_plan,
         quiz: (0..4)
             .map(|i| QuizItem {

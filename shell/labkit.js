@@ -201,6 +201,9 @@
     return cs.map(function (c) {
       try {
         if (!c.width || !c.height) return 'zero';
+        // On screen but collapsed to nothing: its buffer can still hold an
+        // old drawing that nobody sees.
+        if (c.getClientRects().length && (!c.clientWidth || !c.clientHeight)) return 'zero';
         var x = c.getContext('2d'); if (!x) return 'other';
         var d = x.getImageData(0, 0, c.width, c.height).data, h = 0, ink = 0;
         for (var i = 0; i < d.length; i += 16) { h = (h * 31 + d[i] + d[i + 1] * 3 + d[i + 2] * 7 + d[i + 3]) | 0; if (d[i + 3] > 0) ink++; }
@@ -213,7 +216,12 @@
     await wait(150);
     var before = snap(cs), textBefore = document.body.innerText;
     var heights = function () { return cs.map(function (c) { return c.clientHeight; }); };
-    var samples = [heights()];
+    // Canvas heights before and after a second redraw at the same control
+    // setting. A control may legitimately resize a canvas; redrawing with
+    // nothing changed must not.
+    var pairs = [];
+    var again = async function (fire) { var a = heights(); fire(); await wait(30); pairs.push([a, heights()]); };
+    var input = function (el) { return function () { el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); }; };
     var controls = $$('input[type=range],input[type=checkbox],input[type=radio],select,button:not([disabled])').slice(0, 40);
     for (var k = 0; k < controls.length; k++) {
       var el = controls[k];
@@ -223,31 +231,34 @@
         var vals = [lo, (lo + hi) / 2, hi];
         for (var j = 0; j < vals.length; j++) {
           el.value = vals[j];
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
+          input(el)();
           await wait(30);
-          samples.push(heights());
+          await again(input(el));
         }
       } else if (el.tagName === 'SELECT') {
-        for (var o = 0; o < el.options.length; o++) { el.selectedIndex = o; el.dispatchEvent(new Event('change', { bubbles: true })); await wait(30); samples.push(heights()); }
-      } else { el.click(); await wait(80); samples.push(heights()); }
+        for (var o = 0; o < el.options.length; o++) { el.selectedIndex = o; input(el)(); await wait(30); await again(input(el)); }
+      } else {
+        el.click(); await wait(80);
+        // A checkbox or radio redraws again on its events; a second click
+        // on a button would be a new action.
+        if (el.tagName === 'INPUT') await again(input(el));
+      }
     }
     await wait(400);
-    samples.push(heights());
+    var still = heights();
     await wait(400);
-    samples.push(heights());
+    pairs.push([still, heights()]);
     var after = snap(cs), textAfter = document.body.innerText;
     var blank = [];
     after.forEach(function (s, i) { if (s === 'blank' || s === 'zero') blank.push(i); });
     var changed = textAfter !== textBefore || after.some(function (s, i) { return s !== before[i]; });
     var bad = textAfter.match(/\bNaN\b|\bundefined\b|\bInfinity\b|\[object Object\]/g) || [];
-    // A canvas may resize once when a lab first draws it. One whose height
-    // drops again and again across the run shrinks on every redraw.
+    // A canvas that loses height more than once while nothing changed
+    // shrinks on every redraw.
     var shrunk = [];
     cs.forEach(function (c, i) {
-      var drops = 0;
-      for (var j = 1; j < samples.length; j++) if (samples[j][i] < samples[j - 1][i]) drops++;
-      if (drops >= 3) shrunk.push(i);
+      var drops = pairs.filter(function (p) { return p[1][i] < p[0][i]; }).length;
+      if (drops >= 2) shrunk.push(i);
     });
     return {
       errors: errors.slice(), canvases: cs.length, blank: blank, controls: controls.length,
