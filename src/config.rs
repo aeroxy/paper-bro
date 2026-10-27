@@ -33,6 +33,9 @@ pub struct Config {
     pub builds_per_day: u32,
     pub max_queued: i64,
     pub daily_budget_usd: f64,
+    /// Google Analytics measurement ID for paper-bro's own pages (courses on
+    /// AERO carry AERO's tag). Unset: no analytics.
+    pub ga_id: Option<String>,
 }
 
 fn var(name: &str) -> Option<String> {
@@ -61,6 +64,13 @@ impl Config {
         if !chrome.exists() {
             bail!("CHROME_PATH {} does not exist", chrome.display());
         }
+        // Spliced into the app's HTML, so it must be exactly an ID.
+        let ga_id = var("GA_ID");
+        if let Some(id) = &ga_id {
+            if !id.strip_prefix("G-").is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_alphanumeric())) {
+                bail!("GA_ID={id} isn't a measurement ID (G-XXXXXXXXXX)");
+            }
+        }
         Ok(Self {
             database_url: required("NEON_DB")?,
             baseten_key: required("BASETEN_API_KEY")?,
@@ -79,6 +89,7 @@ impl Config {
             builds_per_day: parsed("BUILDS_PER_DAY", 40)?,
             max_queued: parsed("MAX_QUEUED", 20)?,
             daily_budget_usd: parsed("DAILY_BUDGET_USD", 50.0)?,
+            ga_id,
         })
     }
 }
