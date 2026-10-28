@@ -5,6 +5,17 @@
 use crate::arxiv::Meta;
 use crate::course::{LabPlan, Lesson, LessonPlan, Outline, QuizItem, Term};
 
+/// The sample labs that browser QA must pass; every other one it must fail.
+pub const GOOD: &[&str] = &[
+    "redraws every frame",
+    "animates its height with a CSS transition",
+    "eases its canvas smaller as a slider rises",
+    "has a select with 500 options",
+    "probes its sandbox",
+    "works",
+    "resizes with its controls",
+];
+
 pub fn course() -> (Meta, Outline, Vec<Lesson>) {
     let meta = Meta {
         id: "0000.00000".into(),
@@ -144,4 +155,19 @@ c.style.height = '0px';"#,
         glossary: vec![Term { term: "Sigmoid".into(), definition: "An S-shaped curve.".into() }],
     };
     (meta, outline, lessons)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_lab_expected_to_pass_is_in_the_sample_course() {
+        let (_, outline, _) = course();
+        let names: Vec<&str> = outline.lessons.iter().map(|l| l.nav_title.as_str()).collect();
+        for good in GOOD {
+            assert!(names.contains(good), "{good} is not a sample lab: {names:?}");
+        }
+        assert!(names.len() > GOOD.len(), "the sample needs broken labs too");
+    }
 }
