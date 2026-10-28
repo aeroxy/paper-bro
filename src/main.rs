@@ -212,10 +212,13 @@ async fn republish(id: &str) -> Result<()> {
     // The page published last time records which image each lesson showed; if
     // arXiv's rendering has changed since, a figure key may now mean another one.
     let qa_html = course::assemble(&c, qa::ORIGIN);
-    if let Some(published) = db::artifact(pool, id, "html").await?
-        && let Some(why) = course::figures_changed(&course::figure_urls(&published), &course::figure_urls(&qa_html))
-    {
-        bail!("{why}: the figures no longer match the published course; nothing was published");
+    match db::artifact(pool, id, "html").await? {
+        Some(published) => {
+            if let Some(why) = course::figures_changed(&course::figure_urls(&published), &course::figure_urls(&qa_html)) {
+                bail!("{why}: the figures no longer match the published course; nothing was published");
+            }
+        }
+        None => println!("note: there is no stored copy of the published page, so its figures were not compared"),
     }
     let labs: Vec<usize> = (0..lessons.len()).filter(|&i| !lessons[i].lab_dropped).collect();
     let report = qa::run(qa::Input {
