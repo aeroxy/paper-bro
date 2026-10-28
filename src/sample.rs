@@ -1,4 +1,4 @@
-//! A hand-written course with four good labs and six broken ones, for
+//! A hand-written course with four good labs and seven broken ones, for
 //! `paper-bro qa-sample`: proof that browser QA catches each failure kind
 //! without spending anything on the model.
 
@@ -16,7 +16,7 @@ pub fn course() -> (Meta, Outline, Vec<Lesson>) {
         license: Some("http://creativecommons.org/licenses/by/4.0/".into()),
         published: None,
     };
-    let labs: [(&str, &str, &str); 10] = [
+    let labs: [(&str, &str, &str); 11] = [
         (
             "redraws every frame",
             r#"<div class="srow"><label for="k">Speed</label><input type="range" id="k" min="1" max="10" value="3"></div><canvas id="c"></canvas>"#,
@@ -32,6 +32,12 @@ requestAnimationFrame(frame);"#,
 function frame() { c.style.height = (c.clientHeight - 2) + 'px'; const ctx = c.getContext('2d'); ctx.fillStyle = '#2E6BE6'; ctx.fillRect(t % 200, 5, 20, 10); t++; if (t < 400) requestAnimationFrame(frame); }
 PB.bindSliders(v => { t = 0; });
 requestAnimationFrame(frame);"#,
+        ),
+        (
+            "shrinks after a button press",
+            r#"<button class="btn" id="b">Run</button><canvas id="c"></canvas>"#,
+            r#"const c = $('#c'); let t = 0;
+$('#b').addEventListener('click', () => { (function frame() { c.style.height = (c.clientHeight - 1) + 'px'; const ctx = c.getContext('2d'); ctx.fillStyle = '#2E6BE6'; ctx.fillRect(t % 200, 5, 20, 10); if (++t < 120) requestAnimationFrame(frame); })(); });"#,
         ),
         (
             "collapses to nothing",
@@ -108,7 +114,7 @@ c.style.height = '0px';"#,
         tagline: "A sample,\\nfor testing.".into(),
         lede: "This checks that QA catches broken labs.".into(),
         minutes: 15,
-        chips: vec!["🧪 10 labs".into()],
+        chips: vec!["🧪 11 labs".into()],
         lessons: lessons_plan,
         quiz: (0..4)
             .map(|i| QuizItem {

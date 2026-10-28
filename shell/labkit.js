@@ -244,10 +244,11 @@
         if (el.tagName === 'INPUT') await again(input(el));
       }
     }
-    await wait(400);
-    var still = heights();
-    await wait(400);
-    pairs.push([still, heights()]);
+    // Then watch it idle. A button can start an animation, and a lab with only
+    // buttons has no other comparisons, so take three windows: one drop is a
+    // canvas settling, a drop in two or more is one that shrinks on every redraw.
+    await wait(500);
+    for (var w = 0; w < 3; w++) { var a0 = heights(); await wait(250); pairs.push([a0, heights()]); }
     var after = snap(cs), textAfter = document.body.innerText;
     var blank = [];
     after.forEach(function (s, i) { if (s === 'blank' || s === 'zero') blank.push(i); });
