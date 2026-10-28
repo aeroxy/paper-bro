@@ -209,6 +209,8 @@ pub fn esc(s: &str) -> String {
 
 /// Model prose, cut down to an allowlist: no scripts, no event handlers, no
 /// styles, no images (figures are placed by the assembler), https links only.
+/// Any other link (`#`, a path, `//host`) loses its address and is unwrapped to
+/// plain text: the page does its own navigation.
 pub fn sanitize(html: &str) -> String {
     let mut b = ammonia::Builder::empty();
     b.add_tags([
@@ -217,14 +219,18 @@ pub fn sanitize(html: &str) -> String {
     ])
     .add_tag_attributes("a", ["href"])
     .url_schemes(["https"].into())
+    .url_relative(ammonia::UrlRelative::Deny)
     .link_rel(Some("noopener noreferrer"))
     .add_allowed_classes("div", ["card", "flat", "cols", "cols3", "callout", "deeper", "formula", "emo"])
     .add_allowed_classes("span", ["mono", "num", "chip"])
     .add_allowed_classes("p", ["lede"])
     .add_allowed_classes("ol", ["steps"])
     .add_allowed_classes("ul", ["steps"]);
-    b.clean(html).to_string()
+    BARE_LINK.replace_all(&b.clean(html).to_string(), "$1").into_owned()
 }
+
+/// An `<a>` the sanitiser left without an address.
+static BARE_LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?s)<a rel="noopener noreferrer">(.*?)</a>"#).unwrap());
 
 static CLOSE_SCRIPT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)</(script)").unwrap());
 static CLOSE_STYLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)</style").unwrap());
@@ -576,6 +582,19 @@ mod tests {
         let lessons = [lesson("F1"), lesson(""), lesson("F2a")];
         assert_eq!(missing_figures(&lessons, &figures), ["lesson 3: F2a"]);
         assert!(missing_figures(&lessons[..2], &figures).is_empty());
+    }
+
+    #[test]
+    fn sanitize_leaves_only_https_links() {
+        // The page does its own navigation, and a `#` link only jumps to the top,
+        // so any link without a real https address becomes plain text.
+        let clean = sanitize(
+            r##"<p><a href="#">Next lesson →</a> <a href="#l2">Lesson 2</a> <a href="/p/x">Back</a> <a href="//evil.example/x">cdn</a> <a>bare</a> <a href="https://arxiv.org/abs/1">the paper</a></p>"##,
+        );
+        assert_eq!(
+            clean,
+            r#"<p>Next lesson → Lesson 2 Back cdn bare <a href="https://arxiv.org/abs/1" rel="noopener noreferrer">the paper</a></p>"#
+        );
     }
 
     #[test]
