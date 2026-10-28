@@ -115,30 +115,44 @@ document.addEventListener('DOMContentLoaded', function () {
   var stopSettling = function () { clearInterval(settling); settling = null; };
   // A reader who starts scrolling, or goes back, must not be pulled to an earlier target.
   ['wheel', 'touchstart', 'keydown', 'mousedown', 'popstate'].forEach(function (t) { addEventListener(t, stopSettling, { passive: true }); });
+  var jump = function (target, push, limit) {
+    stopSettling();
+    var root = document.documentElement;
+    var go = function () { root.style.scrollBehavior = 'auto'; target.scrollIntoView(); root.style.scrollBehavior = ''; };
+    var docTop = function () { return target.getBoundingClientRect().top + window.pageYOffset; };
+    // Record the history entry before scrolling, so that Back returns the reader
+    // to where they were and not to the place they jumped to.
+    if (push) history.pushState(null, '', '#' + target.id);
+    go();
+    // Native fragment navigation also moves keyboard focus to the target, so the
+    // next Tab starts there; keep that.
+    if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
+    target.focus({ preventScroll: true });
+    // Compare where the target sits in the page, not on screen, so a reader who
+    // starts scrolling is not pulled back.
+    var last = docTop(), ticks = 0;
+    settling = setInterval(function () {
+      if (Math.abs(docTop() - last) > 1) { go(); last = docTop(); }
+      if (++ticks >= limit) stopSettling();
+    }, 120);
+  };
   document.addEventListener('click', function (e) {
     var a = e.target.closest && e.target.closest('a[href^="#"]');
     var id = a && a.getAttribute('href').slice(1);
     var target = id && document.getElementById(id);
     if (!target || e.defaultPrevented || e.button || e.metaKey || e.ctrlKey || e.shiftKey || a.target) return;
     e.preventDefault();
-    stopSettling();
-    var root = document.documentElement;
-    var go = function () { root.style.scrollBehavior = 'auto'; target.scrollIntoView(); root.style.scrollBehavior = ''; };
-    var docTop = function () { return target.getBoundingClientRect().top + window.pageYOffset; };
-    go();
-    // Native fragment navigation also moves keyboard focus to the target, so the
-    // next Tab starts there; keep that.
-    if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
-    target.focus({ preventScroll: true });
-    history.pushState(null, '', '#' + id);
-    // Compare where the target sits in the page, not on screen, so a reader who
-    // starts scrolling is not pulled back.
-    var last = docTop(), ticks = 0;
-    settling = setInterval(function () {
-      if (Math.abs(docTop() - last) > 1) { go(); last = docTop(); }
-      if (++ticks >= 15) stopSettling();
-    }, 120);
+    jump(target, true, 15);
   });
+  // A link opened from outside (...#lq) lands short for the same reason a click
+  // did, so run it through the same jump, for longer because the page is still
+  // loading. Not on reload or Back, where the browser restores the reader's place.
+  var nav = window.performance && performance.getEntriesByType && performance.getEntriesByType('navigation')[0];
+  if ((!nav || nav.type === 'navigate') && location.hash.length > 1) {
+    var landing = null;
+    try { landing = document.getElementById(decodeURIComponent(location.hash.slice(1))); } catch (e) {}
+    if (landing) jump(landing, false, 40);
+  }
 
   var links = $$('#sideNav a');
   if ('IntersectionObserver' in window) {
