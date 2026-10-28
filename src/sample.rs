@@ -1,4 +1,4 @@
-//! A hand-written course with six good labs and seven broken ones, for
+//! A hand-written course with seven good labs and seven broken ones, for
 //! `paper-bro qa-sample`: proof that browser QA catches each failure kind
 //! without spending anything on the model.
 
@@ -16,7 +16,7 @@ pub fn course() -> (Meta, Outline, Vec<Lesson>) {
         license: Some("http://creativecommons.org/licenses/by/4.0/".into()),
         published: None,
     };
-    let labs: [(&str, &str, &str); 13] = [
+    let labs: [(&str, &str, &str); 14] = [
         (
             "redraws every frame",
             r#"<div class="srow"><label for="k">Speed</label><input type="range" id="k" min="1" max="10" value="3"></div><canvas id="c"></canvas>"#,
@@ -44,6 +44,11 @@ $('#b').addEventListener('click', () => { (function frame() { c.style.height = (
             r#"<button class="btn" id="b">Collapse</button><canvas id="c" style="height:260px;transition:height 1.2s"></canvas>"#,
             r#"const c = $('#c'); const draw = () => { const ctx = hiDPI(c); ctx.fillStyle = '#2E6BE6'; ctx.fillRect(10, 10, 80, 30); };
 draw(); $('#b').addEventListener('click', () => { c.style.height = '120px'; setTimeout(draw, 1300); });"#,
+        ),
+        (
+            "eases its canvas smaller as a slider rises",
+            r#"<div class="srow"><label for="k">Size</label><input type="range" id="k" min="1" max="5" step="1" value="1"><span class="val" data-show="k"></span></div><canvas id="c" style="height:260px;transition:height .6s"></canvas>"#,
+            r#"const c = $('#c'); PB.bindSliders(v => { c.style.height = (260 - v.k * 40) + 'px'; const ctx = c.getContext('2d'); ctx.clearRect(0, 0, 300, 150); ctx.fillStyle = '#2E6BE6'; ctx.fillRect(0, 0, 40 * v.k, 20); });"#,
         ),
         (
             "has a select with 500 options",
@@ -126,7 +131,7 @@ c.style.height = '0px';"#,
         tagline: "A sample,\\nfor testing.".into(),
         lede: "This checks that QA catches broken labs.".into(),
         minutes: 15,
-        chips: vec!["🧪 13 labs".into()],
+        chips: vec!["🧪 14 labs".into()],
         lessons: lessons_plan,
         quiz: (0..4)
             .map(|i| QuizItem {
