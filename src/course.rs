@@ -436,7 +436,7 @@ pub fn assemble(c: &Course, origin: &str) -> String {
 {LOGO}
 <div class="grid-bg"></div>
 <header class="top"><div class="wrap">
-  <a class="brand" href="#top"><svg class="logo"><use href="#logo"/></svg><span>{course}</span></a>
+  <a class="brand" href="{home}"><svg class="logo"><use href="#logo"/></svg><span>{course}</span></a>
   <div class="prog"><div class="bar"><i id="progBar"></i></div><span id="progTxt">0 / {total} done</span></div>
 </div></header>
 <main class="wrap">
@@ -459,6 +459,7 @@ pub fn assemble(c: &Course, origin: &str) -> String {
     <aside class="side"><div class="eyebrow">Lessons</div><nav id="sideNav">{nav}</nav></aside>
     <div class="content">
 "##,
+        home = esc(&format!("{origin}/paper-bro/")),
         course = esc(&o.course_title),
         total = n + 1,
         lede = esc(&o.lede),
@@ -582,6 +583,16 @@ mod tests {
         let lessons = [lesson("F1"), lesson(""), lesson("F2a")];
         assert_eq!(missing_figures(&lessons, &figures), ["lesson 3: F2a"]);
         assert!(missing_figures(&lessons[..2], &figures).is_empty());
+    }
+
+    #[test]
+    fn the_top_left_icon_opens_the_app_home_not_the_top_of_the_page() {
+        let (meta, outline, lessons) = crate::sample::course();
+        let c = Course { meta: &meta, outline: &outline, lessons: &lessons, figures: &[], model: "m", built: "today" };
+        let html = assemble(&c, "https://example.test");
+        assert!(html.contains(r#"<a class="brand" href="https://example.test/paper-bro/">"#), "brand link missing");
+        // The quiz footer's own "Back to top" is the link that scrolls up.
+        assert!(html.contains(r##"<a class="next" href="#top">Back to top ↑</a>"##));
     }
 
     #[test]
