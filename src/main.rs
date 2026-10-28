@@ -315,5 +315,23 @@ async fn qa_sample(skip_hang: bool) -> Result<()> {
     for l in &report.labs {
         println!("lab {} ok={} problems={:?}", l.lesson, l.ok, l.problems);
     }
+    // The sample is only worth running if QA gives each lab the right verdict.
+    let mut wrong: Vec<String> = report
+        .labs
+        .iter()
+        .filter_map(|l| {
+            let name = &outline.lessons[l.lesson - 1].nav_title;
+            let should_pass = sample::GOOD.contains(&name.as_str());
+            (l.ok != should_pass).then(|| format!("lab {} ({name}) should {} but {}", l.lesson, if should_pass { "pass" } else { "fail" }, if l.ok { "passed" } else { "failed" }))
+        })
+        .collect();
+    let (what, expected) = if skip_hang { ("the broken figure", "figure image didn't load") } else { ("the skipped page check", "skipped because a lab hangs") };
+    if !report.page_problems.iter().any(|p| p.contains(expected)) {
+        wrong.push(format!("{what} was not reported"));
+    }
+    if !wrong.is_empty() {
+        bail!("browser QA gave the wrong verdict:\n  {}", wrong.join("\n  "));
+    }
+    println!("every sample lab got the right verdict");
     Ok(())
 }
