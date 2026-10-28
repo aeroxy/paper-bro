@@ -39,7 +39,7 @@ impl App {
         let pool = db::connect(&cfg.database_url).await?;
         let courses = db::all_courses(&pool).await?.into_iter().map(|c| (c.arxiv_id.clone(), c)).collect();
         Ok(Self {
-            llm: Llm::new(&cfg.baseten_key, &cfg.model, &cfg.fallback_model, 8)?,
+            llm: Llm::new(&cfg.provider, 8)?,
             arxiv: arxiv::Client::new()?,
             aero: Aero::new(&cfg.aero_mcp_url, &cfg.aero_token)?,
             cfg,

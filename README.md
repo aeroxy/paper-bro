@@ -17,7 +17,7 @@ Why each part is built the way it is lives in its module's doc comment
 | Server | Rust: axum, tokio. One binary serving the SPA, the API, SSE progress, and the build workers |
 | Database | Neon Postgres via sqlx (raw SQL). Migrations in `migrations/` run at boot |
 | Front end | React 19 + Vite + Tailwind 3, built with bun, embedded with rust-embed |
-| Model | Muse Spark Open on Baseten, through `src/llm.rs` (no agent framework) |
+| Model | Muse Spark Open on Baseten, or any OpenAI-compatible server, through `src/llm.rs` (no agent framework) |
 | Browser QA | `chrome-headless-shell` (Chrome for Testing, pinned), driven over CDP with chromiumoxide |
 | Publishing | AERO's `/mcp` endpoint with a personal access token; courses live at `/p/arxiv-<id>` |
 | Deploy | One binary and a headless Chromium behind a reverse proxy at `/paper-bro` |
@@ -97,7 +97,12 @@ paper-bro is one binary plus a headless Chromium, and runs on any Linux host:
 3. **Configure.** Set the environment; `.env.example` lists every variable.
    In production that means `PUBLISH=1` and your `PUBLIC_ORIGIN`. If
    paper-bro runs on the same host as AERO, point `AERO_MCP_URL` at AERO's
-   local port to skip the round trip through the proxy.
+   local port to skip the round trip through the proxy. The model API is
+   Baseten unless you set `LLM_BASE_URL`, `LLM_MODEL` and, if the server wants
+   one, `LLM_API_KEY`: any OpenAI-compatible server that streams usage and
+   supports strict `json_schema` output will do. Costs are counted at Baseten's
+   Muse Spark Open prices whatever the server, so set `DAILY_BUDGET_USD` to
+   suit.
 4. **Run** `paper-bro serve` under whatever supervises processes on your
    host: systemd, a container, or nohup.
 5. **Route** `/paper-bro*` on the public origin to `LISTEN`, without stripping
@@ -126,8 +131,8 @@ an AppArmor profile. Never run it with `--no-sandbox`.
 - **The AERO token** expires after at most 90 days. When it does, publishing
   fails with a message naming `/connect`. Mint a new token there, update
   the environment, and restart.
-- **Spend:** set a budget on the Baseten workspace too. `DAILY_BUDGET_USD` is
-  paper-bro's own guard.
+- **Spend:** set a budget on your model provider's account too.
+  `DAILY_BUDGET_USD` is paper-bro's own guard.
 
 Admin, from the host itself:
 
