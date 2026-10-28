@@ -135,6 +135,15 @@ an AppArmor profile. Never run it with `--no-sandbox`.
   the environment, and restart.
 - **Spend:** set a budget on your model provider's account too.
   `DAILY_BUDGET_USD` is paper-bro's own guard.
+- **Updating a published course:** `paper-bro republish <arxiv id>` rebuilds a
+  finished course's page from its stored lessons with the current page code,
+  runs browser QA on it, and updates the page in place. It makes no model
+  calls and needs no `LLM_*` settings. It refuses if QA finds a problem, if a
+  figure differs from the one published, or if the page is over AERO's size
+  limit. Without `PUBLISH=1` it only writes the page to `tmp/`.
+- **Analytics:** set `GA_ID` to a Google Analytics measurement ID to add the
+  tag to paper-bro's own pages (courses hosted on AERO carry AERO's tag). It is
+  off when unset.
 
 Admin, from the host itself:
 
