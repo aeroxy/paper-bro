@@ -81,7 +81,7 @@ pub async fn process(app: &Arc<App>, id: &str) {
         let note = if retry { format!("{shown} Trying again shortly.") } else { shown };
         app.emit(id, if retry { "retrying" } else { "failed" }, &note).await;
         if budget {
-            // Out of Baseten budget: stop taking jobs for a while.
+            // Out of model budget: stop taking jobs for a while.
             tokio::time::sleep(Duration::from_secs(15 * 60)).await;
         } else if retry {
             tokio::time::sleep(Duration::from_secs(20)).await;
