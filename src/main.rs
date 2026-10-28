@@ -204,6 +204,10 @@ async fn republish(id: &str) -> Result<()> {
     let built = finished.unwrap_or_else(chrono::Utc::now).format("%-d %B %Y").to_string();
     let c = course::Course { meta: &meta, outline: &outline, lessons: &lessons, figures: &figures, model: &model, built: &built };
 
+    // A page AERO would reject is refused before a browser is spent on it.
+    let origin = if app.cfg.publish { app.cfg.public_origin.clone() } else { format!("http://{}", app.cfg.listen) };
+    let html = course::assemble(&c, &origin);
+    course::check_size(&html)?;
     // The page published last time records which image each lesson showed; if
     // arXiv's rendering has changed since, a figure key may now mean another one.
     let qa_html = course::assemble(&c, qa::ORIGIN);
@@ -231,8 +235,6 @@ async fn republish(id: &str) -> Result<()> {
     if !failing.is_empty() || !report.page_problems.is_empty() {
         bail!("browser QA found problems; nothing was published");
     }
-    let origin = if app.cfg.publish { app.cfg.public_origin.clone() } else { format!("http://{}", app.cfg.listen) };
-    let html = course::assemble(&c, &origin);
     if app.cfg.publish {
         let page = row.aero_page_id.filter(|p| p != "preview").context("the course has no AERO page to update")?;
         app.aero.update_page(&page, &html).await?;
