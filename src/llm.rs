@@ -29,6 +29,10 @@ use crate::config::Endpoint;
 const ATTEMPTS: u32 = 6;
 /// No bytes for this long means the stream has died.
 const IDLE: Duration = Duration::from_secs(180);
+/// No response headers for this long means the request has stalled. The stream's
+/// idle timeout only starts once headers arrive, and reqwest's own timeouts cover
+/// connecting and nothing else.
+const HEADERS: Duration = Duration::from_secs(300);
 
 // Prices in USD per million tokens: Muse Spark Open's list price (Oct 2026),
 // used whatever the server, so cost figures are exact only for that model on
@@ -141,10 +145,10 @@ impl Llm {
             if !self.key.is_empty() {
                 call = call.bearer_auth(&self.key);
             }
-            let resp = call.send().await;
+            let resp = send_within(call, HEADERS).await;
             let wait = match resp {
                 Err(e) => {
-                    last_err = anyhow!(e).context(format!("{} request failed", self.name));
+                    last_err = e.context(format!("{} request failed", self.name));
                     backoff(attempt, None)
                 }
                 Ok(resp) if resp.status().is_success() => match read_stream(resp).await {
@@ -189,6 +193,16 @@ impl Llm {
         let value = serde_json::from_str(&text)
             .with_context(|| format!("model returned invalid JSON: {}", text.chars().take(300).collect::<String>()))?;
         Ok((value, usage))
+    }
+}
+
+/// Send a request, giving up if the response headers do not arrive within
+/// `limit`. Without it a server that takes the connection and then says nothing
+/// would hold one of the call slots for ever.
+async fn send_within(call: reqwest::RequestBuilder, limit: Duration) -> Result<reqwest::Response> {
+    match tokio::time::timeout(limit, call.send()).await {
+        Ok(sent) => Ok(sent?),
+        Err(_) => bail!("no response headers within {limit:?}"),
     }
 }
 
@@ -399,5 +413,23 @@ mod tests {
         let llm = Llm::new(&endpoint(serve(app).await), 1).unwrap();
         let err = llm.chat(&request(vec![])).await.unwrap_err();
         assert_eq!(err.to_string(), "model API rejected the request: stand-in HTTP 401: Webhook token not found: wk-x");
+    }
+
+    #[tokio::test]
+    async fn a_server_that_never_answers_is_given_up_on() {
+        let app = Router::new().route("/v1/chat/completions", post(|| async { tokio::time::sleep(Duration::from_secs(3600)).await; "never" }));
+        let url = serve(app).await;
+        let started = std::time::Instant::now();
+        let err = send_within(reqwest::Client::new().post(&url), Duration::from_millis(300)).await.unwrap_err();
+        assert!(err.to_string().contains("no response headers"), "{err:#}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn an_answer_that_comes_in_time_is_passed_through() {
+        let app = Router::new().route("/v1/chat/completions", post(|| async { "ok" }));
+        let url = serve(app).await;
+        let resp = send_within(reqwest::Client::new().post(&url), Duration::from_secs(5)).await.unwrap();
+        assert_eq!(resp.text().await.unwrap(), "ok");
     }
 }
