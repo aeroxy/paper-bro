@@ -401,6 +401,22 @@ pub fn missing_figures(lessons: &[Lesson], figures: &[Figure]) -> Vec<String> {
         .collect()
 }
 
+static FIGURE_SRC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"<figure class="paper-fig"><img src="([^"]*)""#).unwrap());
+
+/// The image address of every figure on an assembled course page, in page order.
+pub fn figure_urls(html: &str) -> Vec<String> {
+    FIGURE_SRC.captures_iter(html).map(|c| c[1].to_string()).collect()
+}
+
+/// Why two pages' figures differ, if they do. Keys like `F1` count figures in
+/// arXiv's rendering, so when that changes, `F1` can become a different image
+/// and a lesson would show the wrong one under the same caption.
+pub fn figures_changed(was: &[String], now: &[String]) -> Option<String> {
+    let i = (0..was.len().max(now.len())).find(|&i| was.get(i) != now.get(i))?;
+    let url = |u: Option<&String>| u.map_or("absent".to_string(), |u| u.clone());
+    Some(format!("figure {} was {} and is now {}", i + 1, url(was.get(i)), url(now.get(i))))
+}
+
 fn figure(c: &Course, lesson: &Lesson) -> String {
     let Some(f) = c.figures.iter().find(|f| !lesson.figure.is_empty() && f.key == lesson.figure) else {
         return String::new();
@@ -593,6 +609,23 @@ mod tests {
         assert!(html.contains(r#"<a class="brand" href="https://example.test/paper-bro/">"#), "brand link missing");
         // The quiz footer's own "Back to top" is the link that scrolls up.
         assert!(html.contains(r##"<a class="next" href="#top">Back to top ↑</a>"##));
+    }
+
+    #[test]
+    fn a_figure_that_changed_since_publication_is_reported() {
+        let (meta, outline, mut lessons) = crate::sample::course();
+        lessons[0].figure = "F1".into();
+        let page = |url: &str| {
+            let figures = [Figure { key: "F1".into(), url: url.into(), caption: "c".into() }];
+            assemble(&Course { meta: &meta, outline: &outline, lessons: &lessons, figures: &figures, model: "m", built: "today" }, "https://example.test")
+        };
+        let (before, after) = (page("https://arxiv.org/html/x/x1.png"), page("https://arxiv.org/html/x/x2.png"));
+        assert_eq!(figure_urls(&before), ["https://arxiv.org/html/x/x1.png"]);
+        assert_eq!(figures_changed(&figure_urls(&before), &figure_urls(&before)), None);
+        let why = figures_changed(&figure_urls(&before), &figure_urls(&after)).unwrap();
+        assert!(why.contains("x1.png") && why.contains("x2.png"), "{why}");
+        // A figure that vanished, or appeared, counts too.
+        assert!(figures_changed(&figure_urls(&before), &[]).unwrap().contains("now absent"));
     }
 
     #[test]

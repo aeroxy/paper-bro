@@ -382,6 +382,23 @@ async fn check_course(browser: &Browser, served: &Arc<Served>) -> Result<Vec<Str
             problems.push(format!("math that KaTeX couldn't render: {}", e.as_str().unwrap_or("")));
         }
     }
+    // Figures load from arXiv and lazily, and the page swaps one that fails for an
+    // "Open this figure on arXiv" link, so nothing else here would notice. Load
+    // them all, wait for each to either show or fall back, and report the ones
+    // that did not show.
+    let figures = "(async () => {
+        const figs = [...document.querySelectorAll('.paper-fig')];
+        const img = f => f.querySelector('img');
+        const shown = f => { const i = img(f); return !!i && i.complete && i.naturalWidth > 0; };
+        figs.forEach(f => { if (img(f)) img(f).loading = 'eager'; });
+        for (let t = 0; t < 100 && !figs.every(f => shown(f) || !img(f)); t++) await new Promise(r => setTimeout(r, 100));
+        return figs.filter(f => !shown(f)).map(f => { const e = f.querySelector('a, img'); return (e && (e.href || e.src)) || '?'; });
+    })()";
+    if let Ok(Value::Array(bad)) = eval(&page, figures, Duration::from_secs(15)).await {
+        for url in bad {
+            problems.push(format!("a figure image didn't load: {}", url.as_str().unwrap_or("")));
+        }
+    }
     let phone = SetDeviceMetricsOverrideParams::new(390, 844, 2.0, true);
     if page.execute(phone).await.is_ok() {
         tokio::time::sleep(Duration::from_millis(500)).await;
