@@ -46,6 +46,16 @@ impl Endpoint {
             model,
         })
     }
+
+    /// True when the key would cross a network unencrypted: one is set and the
+    /// address is plain http to a host other than this machine.
+    pub fn key_in_clear(&self) -> bool {
+        let Ok(u) = reqwest::Url::parse(&self.url) else { return false };
+        let local = u.host_str().is_some_and(|h| {
+            h == "localhost" || h.trim_matches(['[', ']']).parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+        });
+        u.scheme() == "http" && !self.key.is_empty() && !local
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -105,9 +115,16 @@ impl Config {
                 bail!("GA_ID={id} isn't a measurement ID (G-XXXXXXXXXX)");
             }
         }
+        let endpoint = Endpoint::from_vars(var)?;
+        if endpoint.key_in_clear() {
+            log::warn!(
+                "LLM_BASE_URL is plain http to {}: LLM_API_KEY is sent unencrypted. Use https unless that network is one you trust.",
+                endpoint.name
+            );
+        }
         Ok(Self {
             database_url: required("NEON_DB")?,
-            endpoint: Endpoint::from_vars(var)?,
+            endpoint,
             aero_token: required("AERO_TOKEN")?,
             aero_mcp_url: var("AERO_MCP_URL").unwrap_or_else(|| "https://aero.oops.wtf/mcp".into()),
             public_origin: var("PUBLIC_ORIGIN").unwrap_or_else(|| "https://aero.oops.wtf".into()),
@@ -158,6 +175,17 @@ mod tests {
         // else is not sent to this server.
         let e = Endpoint::from_vars(vars(&[("LLM_BASE_URL", "https://ep.example/v1"), ("LLM_MODEL", "m"), ("OPENAI_API_KEY", "other")])).unwrap();
         assert_eq!(e.key, "");
+    }
+
+    #[test]
+    fn a_key_over_plain_http_to_another_machine_is_noticed() {
+        let e = |url: &str, key: &str| Endpoint { name: "h".into(), url: url.into(), key: key.into(), model: "m".into(), fallback_model: "m".into() };
+        assert!(e("http://llm.internal:8000/v1/chat/completions", "k").key_in_clear());
+        assert!(!e("https://llm.example/v1/chat/completions", "k").key_in_clear());
+        assert!(!e("http://llm.internal:8000/v1/chat/completions", "").key_in_clear());
+        for local in ["http://localhost:11434/v1/chat/completions", "http://127.0.0.1:8000/v1/chat/completions", "http://[::1]:8000/v1/chat/completions"] {
+            assert!(!e(local, "k").key_in_clear(), "{local}");
+        }
     }
 
     #[test]
