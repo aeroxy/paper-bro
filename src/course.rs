@@ -430,6 +430,17 @@ fn figure(c: &Course, lesson: &Lesson) -> String {
     )
 }
 
+/// The most HTML AERO takes for a page is about 1 MB; stay clear of it.
+pub const MAX_HTML: usize = 950_000;
+
+/// Refuse a page AERO would reject, with the same message wherever it is built.
+pub fn check_size(html: &str) -> anyhow::Result<()> {
+    if html.len() > MAX_HTML {
+        anyhow::bail!("the course came out at {} KB, over AERO's limit", html.len() / 1024);
+    }
+    Ok(())
+}
+
 /// The whole course, as served from `origin`.
 pub fn assemble(c: &Course, origin: &str) -> String {
     let o = c.outline;
@@ -626,6 +637,13 @@ mod tests {
         assert!(why.contains("x1.png") && why.contains("x2.png"), "{why}");
         // A figure that vanished, or appeared, counts too.
         assert!(figures_changed(&figure_urls(&before), &[]).unwrap().contains("now absent"));
+    }
+
+    #[test]
+    fn a_page_over_aeros_limit_is_refused_with_its_size() {
+        assert!(check_size(&"x".repeat(MAX_HTML)).is_ok());
+        let err = check_size(&"x".repeat(MAX_HTML + 1)).unwrap_err().to_string();
+        assert_eq!(err, "the course came out at 927 KB, over AERO's limit");
     }
 
     #[test]

@@ -38,7 +38,6 @@ const REVIEW: &str = include_str!("../prompts/review.md");
 pub const LEASE: Duration = Duration::from_secs(120);
 const HEARTBEAT: Duration = Duration::from_secs(30);
 const MAX_ATTEMPTS: i32 = 3;
-const MAX_HTML: usize = 950_000;
 
 pub async fn worker(app: Arc<App>, n: usize) {
     log::info!("worker {n} up");
@@ -319,9 +318,7 @@ impl Job {
             built: &built,
         };
         let html = course::assemble(&c, &origin);
-        if html.len() > MAX_HTML {
-            bail!("the course came out at {} KB, over AERO's limit", html.len() / 1024);
-        }
+        course::check_size(&html)?;
         db::put_artifact(&app.pool, &self.id, "html", &html).await?;
         let alias = arxiv::alias(&self.id);
         let (page_id, url) = if cfg.publish {
