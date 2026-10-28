@@ -5,7 +5,7 @@
 //! `course_artifacts` before the next starts, so a job that dies (deploy,
 //! crash, lost lease) resumes from where it was without paying again.
 //!
-//! Prompt layout, for Baseten's automatic prefix cache: every call of a job
+//! Prompt layout, for a server's automatic prefix cache: every call of a job
 //! starts with the same two messages, the shared rules (prompts/system.md)
 //! and the paper, and only the last message differs. The paper is therefore
 //! billed at the cached rate after the first call. `x-session-affinity`

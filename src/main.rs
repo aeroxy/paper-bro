@@ -74,8 +74,8 @@ async fn serve() -> Result<()> {
     let public = tokio::net::TcpListener::bind(listen).await.with_context(|| format!("binding {listen}"))?;
     let admin = tokio::net::TcpListener::bind(admin_listen).await.with_context(|| format!("binding {admin_listen}"))?;
     log::info!(
-        "paper-bro starting: listen={listen} admin={admin_listen} workers={workers} publish={publish} provider={} model={}",
-        cfg.provider.name, cfg.provider.model
+        "paper-bro starting: listen={listen} admin={admin_listen} workers={workers} publish={publish} endpoint={} model={}",
+        cfg.endpoint.name, cfg.endpoint.model
     );
     let app = Arc::new(app::App::new(cfg).await?);
     let stale = qa::remove_stale_profiles();

@@ -17,7 +17,7 @@ Why each part is built the way it is lives in its module's doc comment
 | Server | Rust: axum, tokio. One binary serving the SPA, the API, SSE progress, and the build workers |
 | Database | Neon Postgres via sqlx (raw SQL). Migrations in `migrations/` run at boot |
 | Front end | React 19 + Vite + Tailwind 3, built with bun, embedded with rust-embed |
-| Model | Muse Spark Open on Baseten, or any OpenAI-compatible server, through `src/llm.rs` (no agent framework) |
+| Model | Any OpenAI-compatible server (built against Muse Spark Open), through `src/llm.rs`, no agent framework |
 | Browser QA | `chrome-headless-shell` (Chrome for Testing, pinned), driven over CDP with chromiumoxide |
 | Publishing | AERO's `/mcp` endpoint with a personal access token; courses live at `/p/arxiv-<id>` |
 | Deploy | One binary and a headless Chromium behind a reverse proxy at `/paper-bro` |
@@ -44,7 +44,7 @@ network from inside its iframe.
 ## Local development
 
 ```sh
-cp .env.example .env          # fill in NEON_DB, BASETEN_API_KEY, AERO_TOKEN
+cp .env.example .env          # fill in NEON_DB, AERO_TOKEN, LLM_*
 mkdir -p .chrome && cd .chrome && \
   curl -sSLO https://storage.googleapis.com/chrome-for-testing-public/156.0.8078.47/mac-arm64/chrome-headless-shell-mac-arm64.zip && \
   unzip -q chrome-headless-shell-mac-arm64.zip && rm chrome-headless-shell-mac-arm64.zip && cd ..
@@ -98,11 +98,10 @@ paper-bro is one binary plus a headless Chromium, and runs on any Linux host:
    In production that means `PUBLISH=1` and your `PUBLIC_ORIGIN`. If
    paper-bro runs on the same host as AERO, point `AERO_MCP_URL` at AERO's
    local port to skip the round trip through the proxy. The model API is
-   Baseten unless you set `LLM_BASE_URL`, `LLM_MODEL` and, if the server wants
-   one, `LLM_API_KEY`: any OpenAI-compatible server that streams usage and
-   supports strict `json_schema` output will do. Costs are counted at Baseten's
-   Muse Spark Open prices whatever the server, so set `DAILY_BUDGET_USD` to
-   suit.
+   whatever OpenAI-compatible server `LLM_BASE_URL` (up to `/v1`), `LLM_MODEL`
+   and, if it wants one, `LLM_API_KEY` point at. It must stream usage and
+   support strict `json_schema` output. Costs are counted at Muse Spark Open's
+   list price whatever the server, so set `DAILY_BUDGET_USD` to suit.
 4. **Run** `paper-bro serve` under whatever supervises processes on your
    host: systemd, a container, or nohup.
 5. **Route** `/paper-bro*` on the public origin to `LISTEN`, without stripping

@@ -1,5 +1,5 @@
-//! Chat completions for Muse Spark Open from any OpenAI-compatible server
-//! (Baseten by default, `config::Provider` says where), by hand on reqwest.
+//! Chat completions from any OpenAI-compatible server (`config::Endpoint` says
+//! which), by hand on reqwest. Built against Muse Spark Open.
 //!
 //! No agent framework: every pipeline step is one call, and what matters is
 //! the parts of these APIs that differ from OpenAI's, which client
@@ -24,15 +24,16 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tokio::sync::Semaphore;
 
-use crate::config::Provider;
+use crate::config::Endpoint;
 
 const ATTEMPTS: u32 = 6;
 /// No bytes for this long means the stream has died.
 const IDLE: Duration = Duration::from_secs(180);
 
-// Prices in USD per million tokens (Oct 2026). Baseten and Modal list the same.
-// Modal reports no cached tokens, so there every prompt token is counted, and
-// billed, at the full rate.
+// Prices in USD per million tokens: Muse Spark Open's list price (Oct 2026),
+// used whatever the server, so cost figures are exact only for that model on
+// those terms. A server that reports no cached tokens is counted at the full
+// input rate.
 const PRICE_INPUT: f64 = 1.25;
 const PRICE_CACHED: f64 = 0.15;
 const PRICE_OUTPUT: f64 = 4.25;
@@ -83,9 +84,9 @@ pub struct Llm {
     key: String,
     model: Mutex<String>,
     fallback: String,
-    /// Caps concurrent calls across every job. Sized for Baseten, whose key
-    /// allows 100 requests and 2M tokens a minute (cached tokens count toward
-    /// the latter).
+    /// Caps concurrent calls across every job. 8 was sized for a hosted key
+    /// limited to 100 requests and 2M tokens a minute, where cached tokens
+    /// count toward the latter.
     slots: Semaphore,
 }
 
@@ -100,15 +101,15 @@ pub struct Request<'a> {
 }
 
 impl Llm {
-    pub fn new(provider: &Provider, slots: usize) -> Result<Self> {
+    pub fn new(endpoint: &Endpoint, slots: usize) -> Result<Self> {
         let http = reqwest::Client::builder().connect_timeout(Duration::from_secs(20)).build()?;
         Ok(Self {
             http,
-            name: provider.name.clone(),
-            url: provider.url.clone(),
-            key: provider.key.clone(),
-            model: Mutex::new(provider.model.clone()),
-            fallback: provider.fallback_model.clone(),
+            name: endpoint.name.clone(),
+            url: endpoint.url.clone(),
+            key: endpoint.key.clone(),
+            model: Mutex::new(endpoint.model.clone()),
+            fallback: endpoint.fallback_model.clone(),
             slots: Semaphore::new(slots),
         })
     }
@@ -327,18 +328,18 @@ mod tests {
         url
     }
 
-    fn provider(url: String) -> Provider {
-        Provider { name: "stand-in".into(), url, key: "wk-id.ws-secret".into(), model: "m".into(), fallback_model: "m".into() }
+    fn endpoint(url: String) -> Endpoint {
+        Endpoint { name: "stand-in".into(), url, key: "wk-id.ws-secret".into(), model: "m".into(), fallback_model: "m".into() }
     }
 
     fn request(messages: Vec<Value>) -> Request<'static> {
         Request { messages, effort: "low", schema: None, affinity: "job-1" }
     }
 
-    /// The stream Modal's Shared Endpoint sent on 28 Oct 2026: reasoning in
-    /// `reasoning_content`, usage on a last chunk with no choices, no cached
-    /// count (`prompt_tokens_details` is null), reasoning tokens at the top.
-    const MODAL_STREAM: &str = concat!(
+    /// A stream as one hosted endpoint sent it: reasoning in `reasoning_content`,
+    /// usage on a last chunk with no choices, no cached count
+    /// (`prompt_tokens_details` is null), reasoning tokens at the top of usage.
+    const SAMPLE_STREAM: &str = concat!(
         "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"hmm\"}}]}\n\n",
         "data: {\"choices\":[{\"delta\":{\"content\":\"rea\"}}]}\n\n",
         "data: {\"choices\":[{\"delta\":{\"content\":\"dy\"}}]}\n\n",
@@ -349,7 +350,7 @@ mod tests {
     );
 
     #[tokio::test]
-    async fn a_modal_stream_is_read_and_priced_with_no_cached_tokens() {
+    async fn a_stream_with_no_cached_count_is_read_and_priced_in_full() {
         // 401 unless the proxy token is sent as a bearer, so success proves it was.
         let app = Router::new().route(
             "/v1/chat/completions",
@@ -357,10 +358,10 @@ mod tests {
                 if headers.get("authorization").and_then(|v| v.to_str().ok()) != Some("Bearer wk-id.ws-secret") {
                     return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Webhook token not found"}))).into_response();
                 }
-                ([("content-type", "text/event-stream")], MODAL_STREAM).into_response()
+                ([("content-type", "text/event-stream")], SAMPLE_STREAM).into_response()
             }),
         );
-        let llm = Llm::new(&provider(serve(app).await), 1).unwrap();
+        let llm = Llm::new(&endpoint(serve(app).await), 1).unwrap();
         let (text, usage) = llm.chat(&request(vec![json!({"role": "user", "content": "hi"})])).await.unwrap();
         assert_eq!(text, "ready");
         assert_eq!((usage.prompt, usage.cached, usage.completion, usage.reasoning, usage.calls), (151, 0, 219, 212, 1));
@@ -368,9 +369,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_exhausted_account_is_a_budget_error_that_names_the_provider() {
+    async fn an_exhausted_account_is_a_budget_error_that_names_the_endpoint() {
         let app = Router::new().route("/v1/chat/completions", post(|| async { (StatusCode::PAYMENT_REQUIRED, Json(json!({"error": "out of credit"}))) }));
-        let llm = Llm::new(&provider(serve(app).await), 1).unwrap();
+        let llm = Llm::new(&endpoint(serve(app).await), 1).unwrap();
         let err = llm.chat(&request(vec![])).await.unwrap_err();
         let Some(LlmError::Budget(m)) = err.downcast_ref::<LlmError>() else { panic!("{err:#}") };
         assert_eq!(m, "stand-in: out of credit");
@@ -384,18 +385,18 @@ mod tests {
                 if headers.contains_key("authorization") {
                     return (StatusCode::BAD_REQUEST, Json(json!({"error": "unexpected Authorization header"}))).into_response();
                 }
-                ([("content-type", "text/event-stream")], MODAL_STREAM).into_response()
+                ([("content-type", "text/event-stream")], SAMPLE_STREAM).into_response()
             }),
         );
-        let provider = Provider { key: String::new(), ..provider(serve(app).await) };
-        let llm = Llm::new(&provider, 1).unwrap();
+        let endpoint = Endpoint { key: String::new(), ..endpoint(serve(app).await) };
+        let llm = Llm::new(&endpoint, 1).unwrap();
         assert_eq!(llm.chat(&request(vec![])).await.unwrap().0, "ready");
     }
 
     #[tokio::test]
     async fn a_refused_request_is_not_retried() {
         let app = Router::new().route("/v1/chat/completions", post(|| async { (StatusCode::UNAUTHORIZED, Json(json!({"error": "Webhook token not found: wk-x"}))) }));
-        let llm = Llm::new(&provider(serve(app).await), 1).unwrap();
+        let llm = Llm::new(&endpoint(serve(app).await), 1).unwrap();
         let err = llm.chat(&request(vec![])).await.unwrap_err();
         assert_eq!(err.to_string(), "model API rejected the request: stand-in HTTP 401: Webhook token not found: wk-x");
     }
