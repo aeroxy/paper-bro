@@ -204,9 +204,17 @@ async fn republish(id: &str) -> Result<()> {
     let built = finished.unwrap_or_else(chrono::Utc::now).format("%-d %B %Y").to_string();
     let c = course::Course { meta: &meta, outline: &outline, lessons: &lessons, figures: &figures, model: &model, built: &built };
 
+    // The page published last time records which image each lesson showed; if
+    // arXiv's rendering has changed since, a figure key may now mean another one.
+    let qa_html = course::assemble(&c, qa::ORIGIN);
+    if let Some(published) = db::artifact(pool, id, "html").await?
+        && let Some(why) = course::figures_changed(&course::figure_urls(&published), &course::figure_urls(&qa_html))
+    {
+        bail!("{why}: the figures no longer match the published course; nothing was published");
+    }
     let labs: Vec<usize> = (0..lessons.len()).filter(|&i| !lessons[i].lab_dropped).collect();
     let report = qa::run(qa::Input {
-        course_html: course::assemble(&c, qa::ORIGIN),
+        course_html: qa_html,
         lab_pages: labs.iter().map(|&i| (i + 1, course::lab_page(&c, qa::ORIGIN, i))).collect(),
         figure_prefix: Some(format!("https://arxiv.org/html/{id}")),
         chrome: &app.cfg.chrome,
@@ -273,11 +281,18 @@ async fn qa_sample(skip_hang: bool) -> Result<()> {
         outline.lessons.pop();
         lessons.pop();
     }
+    // A figure whose image cannot load, so the page check has one to find.
+    let figures = vec![ingest::Figure {
+        key: "F1".into(),
+        url: "https://figures.invalid/missing.png".into(),
+        caption: "A figure that does not load.".into(),
+    }];
+    lessons[0].figure = "F1".into();
     let c = course::Course {
         meta: &meta,
         outline: &outline,
         lessons: &lessons,
-        figures: &[],
+        figures: &figures,
         model: "none",
         built: "today",
     };
