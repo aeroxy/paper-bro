@@ -38,9 +38,15 @@ impl Endpoint {
             .filter(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some())
             .with_context(|| format!("LLM_BASE_URL={base} isn't a URL (expected https://host/v1)"))?;
         let model = need("LLM_MODEL")?;
+        let mut url = parsed.clone();
+        url.set_fragment(None);
+        url.path_segments_mut()
+            .map_err(|_| anyhow::anyhow!("LLM_BASE_URL={base} can't carry a path"))?
+            .pop_if_empty()
+            .extend(["chat", "completions"]);
         Ok(Self {
             name: parsed.host_str().unwrap_or_default().to_string(),
-            url: format!("{}/chat/completions", parsed.as_str().trim_end_matches('/')),
+            url: url.to_string(),
             key: get("LLM_API_KEY").unwrap_or_default(),
             fallback_model: get("LLM_FALLBACK_MODEL").unwrap_or_else(|| model.clone()),
             model,
@@ -159,6 +165,15 @@ mod tests {
         // A local server wants no key, and may name a fallback model.
         let e = Endpoint::from_vars(vars(&[("LLM_BASE_URL", "http://localhost:11434/v1"), ("LLM_MODEL", "a"), ("LLM_FALLBACK_MODEL", "b")])).unwrap();
         assert_eq!((e.name.as_str(), e.url.as_str(), e.key.as_str(), e.fallback_model.as_str()), ("localhost", "http://localhost:11434/v1/chat/completions", "", "b"));
+    }
+
+    #[test]
+    fn the_path_is_added_before_any_query() {
+        let url = |base: &str| Endpoint::from_vars(vars(&[("LLM_BASE_URL", base), ("LLM_MODEL", "m")])).unwrap().url;
+        assert_eq!(url("https://ep.example/v1?api-version=1"), "https://ep.example/v1/chat/completions?api-version=1");
+        assert_eq!(url("https://ep.example/v1/?api-version=1"), "https://ep.example/v1/chat/completions?api-version=1");
+        assert_eq!(url("https://ep.example"), "https://ep.example/chat/completions");
+        assert_eq!(url("https://ep.example/v1#notes"), "https://ep.example/v1/chat/completions");
     }
 
     #[test]
