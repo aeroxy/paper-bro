@@ -132,6 +132,13 @@ fn paper_message(meta: &Meta, paper: &Paper) -> String {
     )
 }
 
+/// The lessons whose labs are tested and repaired. A lab dropped by an earlier
+/// attempt stays dropped: its lab page has no lab, so testing it would fail and
+/// send the lesson back to the model, which rewrites it and undoes the drop.
+fn labs_to_test(lessons: &[Lesson]) -> Vec<usize> {
+    (0..lessons.len()).filter(|&i| !lessons[i].lab_dropped).collect()
+}
+
 impl Job {
     fn add(&self, u: Usage) {
         self.usage.lock().unwrap().add(&u);
@@ -238,7 +245,7 @@ impl Job {
 
         // 4-6. Test, review, repair.
         self.stage("qa", "Testing every lab in a real browser").await;
-        let all: Vec<usize> = (0..n).collect();
+        let all = labs_to_test(&lessons);
         let report = self.qa(&meta, &outline, &lessons, &paper, &all).await?;
         self.stage("review", "A separate reviewer is checking the course against the paper").await;
         let review = match self.review(&paper_msg, &outline, &lessons, &report).await {
@@ -531,5 +538,20 @@ impl Job {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lesson(lab_dropped: bool) -> Lesson {
+        Lesson { prose_html: String::new(), figure: String::new(), figure_note: String::new(), lab_html: String::new(), lab_css: String::new(), lab_js: String::new(), lab_dropped }
+    }
+
+    #[test]
+    fn a_lab_dropped_by_an_earlier_attempt_is_not_tested_again() {
+        assert_eq!(labs_to_test(&[lesson(false), lesson(true), lesson(false)]), vec![0, 2]);
+        assert!(labs_to_test(&[lesson(true)]).is_empty());
     }
 }
