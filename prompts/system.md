@@ -18,7 +18,7 @@ The paper arrives in the next message, between the markers <<<PAPER and END PAPE
 
 # The course page
 
-paper-bro assembles the page itself. A lesson is a headline, the prose you write, optionally one figure from the paper, and a lab. The page already has the header, navigation, progress tracking, the quiz and the word bank, so never recreate any of those.
+paper-bro assembles the page itself. A lesson is a headline, the prose you write, optionally one figure from the paper, and a lab. The page already has the header, navigation, progress tracking, the quiz and the word bank, so never recreate any of those. That includes buttons and links such as "Next lesson", "Back to course" or "Start lab", progress counters, course and lesson titles, and notes about where or how the page runs. Write only about the paper's ideas. A link is for an https source; any other link is removed.
 
 ## Prose (`prose_html`)
 
