@@ -368,6 +368,17 @@ async fn check_lab(browser: &Browser, served: &Arc<Served>, n: usize, screenshot
     Ok((r, hung))
 }
 
+/// What the figure check's result means for the page. A check that could not
+/// run is a problem too: it must never read as "all clear", or a republish
+/// would publish figures nobody looked at.
+fn figure_problems(result: Result<Value>) -> Vec<String> {
+    match result {
+        Ok(Value::Array(bad)) => bad.iter().map(|u| format!("a figure image didn't load: {}", u.as_str().unwrap_or(""))).collect(),
+        Ok(_) => vec!["the figure check returned no result".into()],
+        Err(e) => vec![format!("the figure check couldn't finish: {e}")],
+    }
+}
+
 async fn check_course(browser: &Browser, served: &Arc<Served>) -> Result<Vec<String>> {
     let (page, errors) = open(browser, served).await?;
     let mut problems = Vec::new();
@@ -394,11 +405,7 @@ async fn check_course(browser: &Browser, served: &Arc<Served>) -> Result<Vec<Str
         for (let t = 0; t < 100 && !figs.every(f => shown(f) || !img(f)); t++) await new Promise(r => setTimeout(r, 100));
         return figs.filter(f => !shown(f)).map(f => { const e = f.querySelector('a, img'); return (e && (e.href || e.src)) || '?'; });
     })()";
-    if let Ok(Value::Array(bad)) = eval(&page, figures, Duration::from_secs(15)).await {
-        for url in bad {
-            problems.push(format!("a figure image didn't load: {}", url.as_str().unwrap_or("")));
-        }
-    }
+    problems.extend(figure_problems(eval(&page, figures, Duration::from_secs(15)).await));
     let phone = SetDeviceMetricsOverrideParams::new(390, 844, 2.0, true);
     if page.execute(phone).await.is_ok() {
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -413,4 +420,23 @@ async fn check_course(browser: &Browser, served: &Arc<Served>) -> Result<Vec<Str
     }
     let _ = tokio::time::timeout(Duration::from_secs(5), page.close()).await;
     Ok(problems)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn failing_figures_are_listed_and_a_clean_check_is_silent() {
+        assert!(figure_problems(Ok(json!([]))).is_empty());
+        assert_eq!(figure_problems(Ok(json!(["https://x/a.png"]))), ["a figure image didn't load: https://x/a.png"]);
+    }
+
+    #[test]
+    fn a_figure_check_that_could_not_run_is_a_problem() {
+        let timed_out = figure_problems(Err(anyhow!("timed out after 15s")));
+        assert_eq!(timed_out, ["the figure check couldn't finish: timed out after 15s"]);
+        assert_eq!(figure_problems(Ok(Value::Null)), ["the figure check returned no result"]);
+    }
 }
