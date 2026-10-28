@@ -126,6 +126,10 @@ document.addEventListener('DOMContentLoaded', function () {
     var go = function () { root.style.scrollBehavior = 'auto'; target.scrollIntoView(); root.style.scrollBehavior = ''; };
     var docTop = function () { return target.getBoundingClientRect().top + window.pageYOffset; };
     go();
+    // Native fragment navigation also moves keyboard focus to the target, so the
+    // next Tab starts there; keep that.
+    if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
+    target.focus({ preventScroll: true });
     history.pushState(null, '', '#' + id);
     // Compare where the target sits in the page, not on screen, so a reader who
     // starts scrolling is not pulled back.
