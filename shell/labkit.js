@@ -244,6 +244,7 @@
         var lo = parseFloat(el.min || '0'), hi = parseFloat(el.max || '100');
         var vals = [lo, (lo + hi) / 2, hi];
         for (var j = 0; j < vals.length; j++) {
+          if (Date.now() > deadline) break;
           el.value = vals[j];
           input(el)();
           await wait(30);
@@ -254,7 +255,7 @@
         var count = el.options.length, step = Math.max(1, Math.ceil(count / 10)), picks = [];
         for (var o = 0; o < count; o += step) picks.push(o);
         if (count && picks[picks.length - 1] !== count - 1) picks.push(count - 1);
-        for (var q = 0; q < picks.length; q++) { el.selectedIndex = picks[q]; input(el)(); await wait(30); await again(input(el)); }
+        for (var q = 0; q < picks.length; q++) { if (Date.now() > deadline) break; el.selectedIndex = picks[q]; input(el)(); await wait(30); await again(input(el)); }
       } else {
         el.click(); await wait(80);
         // A checkbox or radio redraws again on its events; a second click
