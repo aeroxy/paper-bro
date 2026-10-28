@@ -172,7 +172,8 @@ async fn build(id: &str) -> Result<()> {
 /// publish it in place. The lessons are the ones that were reviewed; nothing
 /// is regenerated, so this costs nothing and changes only the shell.
 async fn republish(id: &str) -> Result<()> {
-    let cfg = config::Config::from_env()?;
+    // It makes no model calls, so it does not ask for model settings.
+    let cfg = config::Config::from_env_for(false)?;
     let app = app::App::new(cfg).await?;
     let pool = &app.pool;
     let meta = db::get_paper(pool, id).await?.context("no such paper in the database")?;

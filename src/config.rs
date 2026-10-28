@@ -13,7 +13,7 @@ use std::path::PathBuf;
 pub const BASE: &str = "/paper-bro";
 
 /// The OpenAI-compatible chat-completions endpoint a build calls.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Endpoint {
     /// The endpoint's host, for messages.
     pub name: String,
@@ -26,7 +26,33 @@ pub struct Endpoint {
     pub fallback_model: String,
 }
 
+// Never print the key (or a token in the URL's query), whatever logs this.
+impl std::fmt::Debug for Endpoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Endpoint")
+            .field("name", &self.name)
+            .field("url", &self.url.split('?').next().unwrap_or_default())
+            .field("key", &if self.key.is_empty() { "" } else { "<redacted>" })
+            .field("model", &self.model)
+            .field("fallback_model", &self.fallback_model)
+            .finish()
+    }
+}
+
 impl Endpoint {
+    /// What a command that makes no model calls carries in place of one.
+    fn unused() -> Self {
+        Self { name: "(not used)".into(), url: String::new(), key: String::new(), model: String::new(), fallback_model: String::new() }
+    }
+
+    /// The settings, or for a command that needs no model, whatever is there.
+    fn or_unused(settings: Result<Self>, needs_model: bool) -> Result<Self> {
+        match settings {
+            Err(_) if !needs_model => Ok(Self::unused()),
+            other => other,
+        }
+    }
+
     /// Any OpenAI-compatible server, hosted or your own: `LLM_BASE_URL` (up to
     /// and including `/v1`), `LLM_MODEL`, and `LLM_API_KEY` if it wants one. It
     /// must stream usage and support strict `json_schema` output.
@@ -64,7 +90,8 @@ impl Endpoint {
     }
 }
 
-#[derive(Clone, Debug)]
+// No Debug: it holds the database URL and the AERO token.
+#[derive(Clone)]
 pub struct Config {
     pub database_url: String,
     pub endpoint: Endpoint,
@@ -108,6 +135,12 @@ where
 
 impl Config {
     pub fn from_env() -> Result<Self> {
+        Self::from_env_for(true)
+    }
+
+    /// `needs_model` is false for a command that never calls the model, which
+    /// then runs without the `LLM_*` settings.
+    pub fn from_env_for(needs_model: bool) -> Result<Self> {
         let chrome = PathBuf::from(var("CHROME_PATH").unwrap_or_else(|| {
             ".chrome/chrome-headless-shell-mac-arm64/chrome-headless-shell".into()
         }));
@@ -121,7 +154,7 @@ impl Config {
                 bail!("GA_ID={id} isn't a measurement ID (G-XXXXXXXXXX)");
             }
         }
-        let endpoint = Endpoint::from_vars(var)?;
+        let endpoint = Endpoint::or_unused(Endpoint::from_vars(var), needs_model)?;
         if endpoint.key_in_clear() {
             log::warn!(
                 "LLM_BASE_URL is plain http to {}: LLM_API_KEY is sent unencrypted. Use https unless that network is one you trust.",
@@ -201,6 +234,23 @@ mod tests {
         for local in ["http://localhost:11434/v1/chat/completions", "http://127.0.0.1:8000/v1/chat/completions", "http://[::1]:8000/v1/chat/completions"] {
             assert!(!e(local, "k").key_in_clear(), "{local}");
         }
+    }
+
+    #[test]
+    fn debug_output_never_shows_the_key_or_a_token_in_the_url() {
+        let e = Endpoint { name: "h".into(), url: "https://h/v1/chat/completions?token=hunter2".into(), key: "sk-secret".into(), model: "m".into(), fallback_model: "m".into() };
+        let shown = format!("{e:?}");
+        assert!(!shown.contains("sk-secret") && !shown.contains("hunter2"), "{shown}");
+        assert!(shown.contains("<redacted>") && shown.contains("https://h/v1/chat/completions"), "{shown}");
+    }
+
+    #[test]
+    fn a_command_that_needs_no_model_runs_without_model_settings() {
+        let missing = || Endpoint::from_vars(vars(&[]));
+        assert!(Endpoint::or_unused(missing(), false).is_ok());
+        assert!(Endpoint::or_unused(missing(), true).is_err());
+        let set = Endpoint::from_vars(vars(&[("LLM_BASE_URL", "https://ep.example/v1"), ("LLM_MODEL", "m")]));
+        assert_eq!(Endpoint::or_unused(set, false).unwrap().model, "m");
     }
 
     #[test]
