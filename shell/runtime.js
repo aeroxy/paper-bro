@@ -106,6 +106,31 @@ document.addEventListener('DOMContentLoaded', function () {
     save(); render();
   });
   render();
+
+  // In-page links. A browser aims its smooth scroll once, at the start, but the
+  // labs further down only grow as they come into view, so on a long jump (to
+  // the quiz) the target moves away and the scroll stops short. Jump straight
+  // there instead, and re-aim for a moment if the page shifts under it.
+  document.addEventListener('click', function (e) {
+    var a = e.target.closest && e.target.closest('a[href^="#"]');
+    var id = a && a.getAttribute('href').slice(1);
+    var target = id && document.getElementById(id);
+    if (!target || e.defaultPrevented || e.button || e.metaKey || e.ctrlKey || e.shiftKey || a.target) return;
+    e.preventDefault();
+    var root = document.documentElement;
+    var go = function () { root.style.scrollBehavior = 'auto'; target.scrollIntoView(); root.style.scrollBehavior = ''; };
+    var docTop = function () { return target.getBoundingClientRect().top + window.pageYOffset; };
+    go();
+    history.pushState(null, '', '#' + id);
+    // Compare where the target sits in the page, not on screen, so a reader who
+    // starts scrolling is not pulled back.
+    var last = docTop(), ticks = 0;
+    var timer = setInterval(function () {
+      if (Math.abs(docTop() - last) > 1) { go(); last = docTop(); }
+      if (++ticks >= 15) clearInterval(timer);
+    }, 120);
+  });
+
   var links = $$('#sideNav a');
   if ('IntersectionObserver' in window) {
     var io = new IntersectionObserver(function (es) {
