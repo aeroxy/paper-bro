@@ -223,7 +223,11 @@
     var again = async function (fire) { var a = heights(); fire(); await wait(30); pairs.push([a, heights()]); };
     var input = function (el) { return function () { el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); }; };
     var controls = $$('input[type=range],input[type=checkbox],input[type=radio],select,button:not([disabled])').slice(0, 40);
+    // The page gives the whole test 25 s: stop working controls after 15 s so the
+    // idle check and the final snapshot always fit.
+    var deadline = Date.now() + 15000;
     for (var k = 0; k < controls.length; k++) {
+      if (Date.now() > deadline) break;
       var el = controls[k];
       if (!el.isConnected) continue;
       if (el.type === 'range') {
@@ -236,7 +240,11 @@
           await again(input(el));
         }
       } else if (el.tagName === 'SELECT') {
-        for (var o = 0; o < el.options.length; o++) { el.selectedIndex = o; input(el)(); await wait(30); await again(input(el)); }
+        // A long list gets an even spread of its options, first and last included.
+        var count = el.options.length, step = Math.max(1, Math.ceil(count / 10)), picks = [];
+        for (var o = 0; o < count; o += step) picks.push(o);
+        if (count && picks[picks.length - 1] !== count - 1) picks.push(count - 1);
+        for (var q = 0; q < picks.length; q++) { el.selectedIndex = picks[q]; input(el)(); await wait(30); await again(input(el)); }
       } else {
         el.click(); await wait(80);
         // A checkbox or radio redraws again on its events; a second click
@@ -247,7 +255,15 @@
     // Then watch it idle. A button can start an animation, and a lab with only
     // buttons has no other comparisons, so take three windows: one drop is a
     // canvas settling, a drop in two or more is one that shrinks on every redraw.
-    await wait(500);
+    // First let CSS transitions and finite animations run out, so a canvas that
+    // eases to a new height is not mistaken for one that keeps shrinking (an
+    // infinite animation never ends, so wait at most 2.5 s).
+    var running = document.getAnimations ? document.getAnimations().filter(function (an) {
+      var t = an.effect && an.effect.getComputedTiming && an.effect.getComputedTiming();
+      return t && t.iterations !== Infinity && an.playState === 'running';
+    }) : [];
+    await Promise.race([Promise.all(running.map(function (an) { return an.finished.catch(function () {}); })), wait(2500)]);
+    await wait(250);
     for (var w = 0; w < 3; w++) { var a0 = heights(); await wait(250); pairs.push([a0, heights()]); }
     var after = snap(cs), textAfter = document.body.innerText;
     var blank = [];
