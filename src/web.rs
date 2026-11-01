@@ -14,12 +14,13 @@ use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use regex::Regex;
 use rust_embed::RustEmbed;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use crate::app::App;
@@ -398,12 +399,16 @@ async fn static_file(uri: Uri) -> Response {
 /// count toward the same totals as the courses AERO serves.
 const GA_ID: &str = "G-91SNPT9G03";
 
-/// The app's page, with the analytics tag.
+/// GitHub Pages' copy of the front end's built files, published from `main` by
+/// .github/workflows/pages.yml, so that visitors fetch them from GitHub's CDN.
+const CDN: &str = "https://aeroxy.github.io/paper-bro/";
+
+/// The app's page, with the analytics tag, loading its files from the CDN.
 fn index() -> Response {
     let Some(file) = Assets::get("index.html") else {
         return asset("index.html");
     };
-    let html = with_analytics(&String::from_utf8_lossy(&file.data), GA_ID);
+    let html = with_cdn(&with_analytics(&String::from_utf8_lossy(&file.data), GA_ID), CDN);
     ([(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")], html).into_response()
 }
 
@@ -417,6 +422,29 @@ fn with_analytics(html: &str, id: &str) -> String {
     let mut out = html.to_string();
     out.insert_str(at, &tag);
     out
+}
+
+/// The page's script and stylesheet tags, as Vite writes them.
+static ASSET_TAG: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!(r#"<(script|link)([^>]*?) (?:src|href)="{}/(assets/[^"]+)""#, regex::escape(BASE))).unwrap());
+
+/// Points the page's script and stylesheet at the CDN, each falling back to this
+/// server's own copy when the CDN doesn't have it: a deploy can run ahead of the
+/// Pages workflow, Pages keeps only the latest build, and a fork's build isn't
+/// there at all. A file the CDN has under the same name is the same file, since
+/// the name carries a hash of its content.
+fn with_cdn(html: &str, cdn: &str) -> String {
+    ASSET_TAG
+        .replace_all(html, |c: &regex::Captures| {
+            let (tag, attrs, path) = (&c[1], &c[2], &c[3]);
+            let local = format!("{BASE}/{path}");
+            if tag == "script" {
+                format!(r#"<script{attrs} src="{cdn}{path}" onerror="var s=document.createElement('script');s.type='module';s.src='{local}';document.head.append(s)""#)
+            } else {
+                format!(r#"<link{attrs} href="{cdn}{path}" onerror="this.onerror=null;this.href='{local}'""#)
+            }
+        })
+        .into_owned()
 }
 
 fn asset(path: &str) -> Response {
@@ -510,5 +538,23 @@ mod tests {
         let out = with_analytics(r#"<!doctype html><html lang="en"><head><meta charset="utf-8"></head></html>"#, "G-TEST1");
         assert!(out.starts_with(r#"<!doctype html><html lang="en"><head><script async src="https://www.googletagmanager.com/gtag/js?id=G-TEST1"></script>"#), "{out}");
         assert!(out.contains(r#"gtag("config","G-TEST1");</script><meta charset="utf-8">"#), "{out}");
+    }
+
+    #[test]
+    fn the_page_loads_its_files_from_the_cdn_and_falls_back_to_its_own() {
+        assert!(CDN.starts_with("https://") && CDN.ends_with(&format!("{BASE}/")), "{CDN}");
+        let head = r#"<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/inter@5/index.min.css" />
+    <script type="module" crossorigin src="/paper-bro/assets/index-AbC_1.js"></script>
+    <link rel="stylesheet" crossorigin href="/paper-bro/assets/index-dEf-2.css">"#;
+        let out = with_cdn(head, "https://cdn.test/paper-bro/");
+        assert!(out.starts_with(r#"<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/inter@5/index.min.css" />"#), "{out}");
+        assert!(
+            out.contains(r#"<script type="module" crossorigin src="https://cdn.test/paper-bro/assets/index-AbC_1.js" onerror="var s=document.createElement('script');s.type='module';s.src='/paper-bro/assets/index-AbC_1.js';document.head.append(s)"></script>"#),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#"<link rel="stylesheet" crossorigin href="https://cdn.test/paper-bro/assets/index-dEf-2.css" onerror="this.onerror=null;this.href='/paper-bro/assets/index-dEf-2.css'">"#),
+            "{out}"
+        );
     }
 }
