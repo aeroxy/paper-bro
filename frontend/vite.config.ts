@@ -6,6 +6,8 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   base: '/paper-bro/',
   plugins: [react()],
+  // Leave the dependencies' @license banners out of the bundle.
+  esbuild: { legalComments: 'none' },
   server: {
     proxy: { '/paper-bro/api': 'http://127.0.0.1:8083' },
   },
