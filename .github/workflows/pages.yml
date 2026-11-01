@@ -1,0 +1,53 @@
+# Publishes the front end's built files to GitHub Pages
+# (https://aeroxy.github.io/paper-bro/), where the app's page loads them from
+# GitHub's CDN. The server keeps its own copy and the page falls back to it, so
+# a deploy can run ahead of this workflow (see `with_cdn` in src/web.rs).
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths: ["frontend/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time, and never cancel one halfway.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+      - name: Build
+        working-directory: frontend
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+      # Only the built files: the page itself stays on the server, which adds
+      # the analytics tag and answers the API calls. The site's root sends
+      # anyone who opens it to the app.
+      - name: Assemble the site
+        run: |
+          mkdir site
+          cp -R frontend/dist/assets site/
+          cat > site/index.html <<'EOF'
+          <!doctype html><meta charset="utf-8"><title>paper-bro</title><link rel="canonical" href="https://aero.oops.wtf/paper-bro/"><meta http-equiv="refresh" content="0; url=https://aero.oops.wtf/paper-bro/"><a href="https://aero.oops.wtf/paper-bro/">paper-bro</a>
+          EOF
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v5
