@@ -14,6 +14,9 @@ const STEPS: { stage: string; label: string }[] = [
   { stage: 'publish', label: 'Publishing' },
 ]
 
+// Every new course is posted there (src/telegram.rs).
+const TELEGRAM = 'https://t.me/arxiv_courses'
+
 export function PaperPage() {
   const { pathname } = useLocation()
   const [params] = useSearchParams()
@@ -151,7 +154,13 @@ function Building({ paper, onDone }: { paper: Paper; onDone: () => void }) {
           ? `Number ${paper.queue_position} in the queue.`
           : 'This takes 5 to 10 minutes.'}
       </h2>
-      <p className="mt-2 text-[13.5px] text-fg-3">You can leave and come back: the course will be here when it's done.</p>
+      <p className="mt-2 text-[13.5px] text-fg-3">
+        You can leave and come back: the course will be here when it's done. To hear when it is, follow{' '}
+        <a className="font-semibold text-action no-underline hover:text-action-700" href={TELEGRAM} target="_blank" rel="noopener">
+          paper-bro on Telegram
+        </a>
+        , where every new course is posted.
+      </p>
       <ol className="mt-5 grid gap-2">
         {STEPS.map((s, i) => (
           <li key={s.stage} className="flex items-center gap-3 text-[14px]">
