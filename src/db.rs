@@ -335,13 +335,33 @@ pub async fn requeue_previews(pool: &PgPool) -> Result<u64> {
     Ok(done.rows_affected())
 }
 
-/// Drop every checkpoint, so a forced rebuild starts from scratch.
+/// The artifact recording a course's announcement on Telegram (telegram.rs):
+/// the message's id.
+pub const ANNOUNCED: &str = "telegram";
+
+/// Drop every checkpoint, so a forced rebuild starts from scratch. The record
+/// of its announcement stays: a course is announced once.
 pub async fn clear_artifacts(pool: &PgPool, id: &str) -> Result<()> {
-    sqlx::query("DELETE FROM course_artifacts WHERE arxiv_id = $1")
+    sqlx::query("DELETE FROM course_artifacts WHERE arxiv_id = $1 AND key <> $2")
         .bind(id)
+        .bind(ANNOUNCED)
         .execute(pool)
         .await?;
     Ok(())
+}
+
+/// Courses published to AERO and not announced yet, oldest first.
+pub async fn unannounced(pool: &PgPool) -> Result<Vec<String>> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT arxiv_id FROM courses c
+         WHERE status = 'ready' AND aero_page_id <> 'preview' AND aero_url IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM course_artifacts a WHERE a.arxiv_id = c.arxiv_id AND a.key = $1)
+         ORDER BY finished_at",
+    )
+    .bind(ANNOUNCED)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|r| r.0).collect())
 }
 
 #[derive(Clone, Debug, FromRow, serde::Serialize)]

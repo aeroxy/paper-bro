@@ -90,6 +90,34 @@ impl Endpoint {
     }
 }
 
+/// The Telegram channel each new course is announced on (telegram.rs). The
+/// bot must be one of the channel's admins, with "Post Messages".
+#[derive(Clone)]
+pub struct Telegram {
+    pub token: String,
+    /// The channel's numeric id, which starts with -100, or its @name.
+    pub chat_id: String,
+}
+
+// Never print the token, whatever logs this.
+impl std::fmt::Debug for Telegram {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Telegram").field("token", &"<redacted>").field("chat_id", &self.chat_id).finish()
+    }
+}
+
+impl Telegram {
+    /// `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`, both or neither: one alone
+    /// is a mistake worth stopping for.
+    fn from_vars(get: impl Fn(&str) -> Option<String>) -> Result<Option<Self>> {
+        match (get("TELEGRAM_BOT_TOKEN"), get("TELEGRAM_CHAT_ID")) {
+            (Some(token), Some(chat_id)) => Ok(Some(Self { token, chat_id })),
+            (None, None) => Ok(None),
+            _ => bail!("set both TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID, or neither"),
+        }
+    }
+}
+
 // No Debug: it holds the database URL and the AERO token.
 #[derive(Clone)]
 pub struct Config {
@@ -110,6 +138,8 @@ pub struct Config {
     pub builds_per_day: u32,
     pub max_queued: i64,
     pub daily_budget_usd: f64,
+    /// Where new courses are announced; none without the TELEGRAM_* settings.
+    pub telegram: Option<Telegram>,
 }
 
 fn var(name: &str) -> Option<String> {
@@ -166,6 +196,7 @@ impl Config {
             builds_per_day: parsed("BUILDS_PER_DAY", 40)?,
             max_queued: parsed("MAX_QUEUED", 20)?,
             daily_budget_usd: parsed("DAILY_BUDGET_USD", 50.0)?,
+            telegram: Telegram::from_vars(var)?,
         })
     }
 }
@@ -240,6 +271,16 @@ mod tests {
         assert!(Endpoint::or_unused(missing(), true).is_err());
         let set = Endpoint::from_vars(vars(&[("LLM_BASE_URL", "https://ep.example/v1"), ("LLM_MODEL", "m")]));
         assert_eq!(Endpoint::or_unused(set, false).unwrap().model, "m");
+    }
+
+    #[test]
+    fn telegram_needs_both_settings_and_never_shows_its_token() {
+        assert!(Telegram::from_vars(vars(&[])).unwrap().is_none());
+        assert!(Telegram::from_vars(vars(&[("TELEGRAM_BOT_TOKEN", "1:x")])).is_err());
+        assert!(Telegram::from_vars(vars(&[("TELEGRAM_CHAT_ID", "-1001")])).is_err());
+        let t = Telegram::from_vars(vars(&[("TELEGRAM_BOT_TOKEN", "123456789:AAsecret"), ("TELEGRAM_CHAT_ID", "-1001")])).unwrap().unwrap();
+        assert_eq!(t.chat_id, "-1001");
+        assert!(!format!("{t:?}").contains("AAsecret"));
     }
 
     #[test]
