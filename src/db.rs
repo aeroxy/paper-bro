@@ -336,8 +336,38 @@ pub async fn requeue_previews(pool: &PgPool) -> Result<u64> {
 }
 
 /// The artifact recording a course's announcement on Telegram (telegram.rs):
-/// the message's id.
+/// the message's id, or `PENDING` while a post is under way.
 pub const ANNOUNCED: &str = "telegram";
+pub const PENDING: &str = "pending";
+
+/// Claim a course's announcement before posting it: true for exactly one
+/// caller, however many reach the course at once. A claim whose post never
+/// finished (still pending after ten minutes; a post gives up after 30
+/// seconds) can be taken over.
+pub async fn claim_announcement(pool: &PgPool, id: &str) -> Result<bool> {
+    let done = sqlx::query(
+        "INSERT INTO course_artifacts (arxiv_id, key, body) VALUES ($1, $2, $3)
+         ON CONFLICT (arxiv_id, key) DO UPDATE SET created_at = now()
+         WHERE course_artifacts.body = $3 AND course_artifacts.created_at < now() - interval '10 minutes'",
+    )
+    .bind(id)
+    .bind(ANNOUNCED)
+    .bind(PENDING)
+    .execute(pool)
+    .await?;
+    Ok(done.rows_affected() == 1)
+}
+
+/// Give a claim back after a failed post, so that a later try can post.
+pub async fn release_announcement(pool: &PgPool, id: &str) -> Result<()> {
+    sqlx::query("DELETE FROM course_artifacts WHERE arxiv_id = $1 AND key = $2 AND body = $3")
+        .bind(id)
+        .bind(ANNOUNCED)
+        .bind(PENDING)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
 
 /// Drop every checkpoint, so a forced rebuild starts from scratch. The record
 /// of its announcement stays: a course is announced once.
@@ -350,15 +380,17 @@ pub async fn clear_artifacts(pool: &PgPool, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Courses published to AERO and not announced yet, oldest first.
+/// Courses published to AERO and not announced yet, oldest first. One with a
+/// post under way is listed; its claim decides who posts.
 pub async fn unannounced(pool: &PgPool) -> Result<Vec<String>> {
     let rows: Vec<(String,)> = sqlx::query_as(
         "SELECT arxiv_id FROM courses c
          WHERE status = 'ready' AND aero_page_id <> 'preview' AND aero_url IS NOT NULL
-           AND NOT EXISTS (SELECT 1 FROM course_artifacts a WHERE a.arxiv_id = c.arxiv_id AND a.key = $1)
+           AND NOT EXISTS (SELECT 1 FROM course_artifacts a WHERE a.arxiv_id = c.arxiv_id AND a.key = $1 AND a.body <> $2)
          ORDER BY finished_at",
     )
     .bind(ANNOUNCED)
+    .bind(PENDING)
     .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(|r| r.0).collect())
