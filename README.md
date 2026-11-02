@@ -20,10 +20,12 @@ Why each part is built the way it is lives in its module's doc comment
 | Model | Any OpenAI-compatible server (built against Muse Spark Open), through `src/llm.rs`, no agent framework |
 | Browser QA | `chrome-headless-shell` (Chrome for Testing, pinned), driven over CDP with chromiumoxide |
 | Publishing | AERO's `/mcp` endpoint with a personal access token; courses live at `/p/arxiv-<id>` |
+| Announcements | Each published course is posted once to the [paper-bro Telegram channel](https://t.me/arxiv_courses) by a bot, when `TELEGRAM_*` is set |
 | Deploy | One binary and a headless Chromium behind a reverse proxy at `/paper-bro` |
 
 A build goes: ingest → outline → lessons (6 in parallel) → browser QA →
-review → repair (at most two rounds) → publish. Each stage checkpoints to
+review → repair (at most two rounds) → publish → a post on the Telegram
+channel. Each stage checkpoints to
 `course_artifacts`, so a restarted job resumes instead of paying again.
 Progress streams to the paper page over SSE.
 
@@ -67,6 +69,7 @@ cargo test                        # unit tests
 cargo run -- qa-sample            # browser QA on a course with deliberately broken labs
 cargo run -- ingest 1706.03762    # the text the model reads, written to tmp/
 cargo run -- build 1706.03762     # build one course in the foreground (costs ~$1)
+cargo run -- announce             # print the Telegram posts not sent yet (PUBLISH=1 sends them)
 ```
 
 ## Deploying
@@ -141,6 +144,12 @@ an AppArmor profile. Never run it with `--no-sandbox`.
   calls and needs no `LLM_*` settings. It refuses if QA finds a problem, if a
   figure differs from the one published, or if the page is over AERO's size
   limit. Without `PUBLISH=1` it only writes the page to `tmp/`.
+- **Telegram:** with `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` set, a
+  publishing server posts each new course to the channel once; a rebuild or
+  a republish doesn't post it again. A failed post is noted with the course's
+  events and doesn't fail the build. `paper-bro announce [<arxiv id>]` posts
+  a course published before, or every one not posted yet; without
+  `PUBLISH=1` it only prints the messages.
 
 Admin, from the host itself:
 

@@ -12,6 +12,7 @@ mod llm;
 mod pipeline;
 mod qa;
 mod sample;
+mod telegram;
 mod web;
 
 use anyhow::{Context, Result, bail};
@@ -25,6 +26,8 @@ const USAGE: &str = "usage: paper-bro <command>
   build ID         build one paper's course in the foreground (resumes from checkpoints)
   republish ID     rebuild a finished course's page from its stored lessons with the
                    current shell, check it in the browser, and update it (no model calls)
+  announce [ID]    post a published course (default: every one not posted yet) to the
+                   Telegram channel, once; without PUBLISH=1 it prints the messages
   ingest ID        fetch a paper and write the text the model reads to tmp/
   qa-sample [nohang]  run browser QA on a hand-written course with broken labs
   migrate          apply database migrations";
@@ -43,6 +46,10 @@ async fn main() -> Result<()> {
         Some("republish") => {
             let id = args.get(1).and_then(|s| arxiv::PaperId::parse(s)).context("usage: republish <arxiv id>")?;
             republish(&id.id).await
+        }
+        Some("announce") => {
+            let id = args.get(1).map(|s| arxiv::PaperId::parse(s).context("usage: announce [arxiv id]")).transpose()?;
+            announce(id.as_ref().map(|i| i.id.as_str())).await
         }
         Some("ingest") => {
             let id = args.get(1).and_then(|s| arxiv::PaperId::parse(s)).context("usage: ingest <arxiv id>")?;
@@ -176,18 +183,7 @@ async fn republish(id: &str) -> Result<()> {
     let cfg = config::Config::from_env_for(false)?;
     let app = app::App::new(cfg).await?;
     let pool = &app.pool;
-    let meta = db::get_paper(pool, id).await?.context("no such paper in the database")?;
-    let row = db::course(pool, id).await?.context("no course for that paper")?;
-    if row.status != "ready" {
-        bail!("{id} is {}, not ready", row.status);
-    }
-    let outline: course::Outline =
-        serde_json::from_str(&db::artifact(pool, id, "outline").await?.context("the outline wasn't kept")?)?;
-    let mut lessons = Vec::new();
-    for i in 1..=outline.lessons.len() {
-        let body = db::artifact(pool, id, &format!("lesson:{i:02}")).await?.with_context(|| format!("lesson {i} wasn't kept"))?;
-        lessons.push(serde_json::from_str::<course::Lesson>(&body)?);
-    }
+    let (meta, row, outline, lessons) = stored(pool, id).await?;
     // Figures come from the paper's HTML rendering, which arXiv serves again.
     let figures = match app.arxiv.html(id, meta.version).await? {
         Some((url, html)) => ingest::from_latexml(&url, &html)?.figures,
@@ -249,6 +245,67 @@ async fn republish(id: &str) -> Result<()> {
         let out = format!("tmp/{}.html", arxiv::alias(id));
         std::fs::write(&out, &html)?;
         println!("dry run: wrote {out} ({} KB), QA clean on {} labs; PUBLISH=1 updates the page", html.len() / 1024, labs.len());
+    }
+    Ok(())
+}
+
+/// A finished course as stored: its paper, its row, and the outline and
+/// lessons that were reviewed.
+async fn stored(pool: &sqlx::PgPool, id: &str) -> Result<(arxiv::Meta, db::CourseRow, course::Outline, Vec<course::Lesson>)> {
+    let meta = db::get_paper(pool, id).await?.context("no such paper in the database")?;
+    let row = db::course(pool, id).await?.context("no course for that paper")?;
+    if row.status != "ready" {
+        bail!("{id} is {}, not ready", row.status);
+    }
+    let outline: course::Outline =
+        serde_json::from_str(&db::artifact(pool, id, "outline").await?.context("the outline wasn't kept")?)?;
+    let mut lessons = Vec::new();
+    for i in 1..=outline.lessons.len() {
+        let body = db::artifact(pool, id, &format!("lesson:{i:02}")).await?.with_context(|| format!("lesson {i} wasn't kept"))?;
+        lessons.push(serde_json::from_str::<course::Lesson>(&body)?);
+    }
+    Ok((meta, row, outline, lessons))
+}
+
+/// Post published courses to the Telegram channel, each once: the one named,
+/// or every one not posted yet, oldest first. A new course is announced when
+/// it is published; this is for the ones from before, or a post that failed.
+/// Without `PUBLISH=1` it only prints the messages.
+async fn announce(id: Option<&str>) -> Result<()> {
+    let app = app::App::new(config::Config::from_env_for(false)?).await?;
+    if app.cfg.publish && app.cfg.telegram.is_none() {
+        bail!("set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to announce");
+    }
+    let ids = match id {
+        Some(id) => vec![id.to_string()],
+        None => db::unannounced(&app.pool).await?,
+    };
+    if ids.is_empty() {
+        println!("every published course has been announced");
+    }
+    let mut posted = 0;
+    for id in &ids {
+        if telegram::announced(&app, id).await? {
+            println!("{id} was announced already");
+            continue;
+        }
+        let (meta, row, outline, lessons) = stored(&app.pool, id).await?;
+        if row.aero_url.is_none() || row.aero_page_id.as_deref() == Some("preview") {
+            bail!("{id} isn't published to AERO");
+        }
+        let text = telegram::message(&meta, &outline, &lessons, &telegram::link(&app.cfg.public_origin, id));
+        if !app.cfg.publish {
+            println!("--- {id} (dry run; PUBLISH=1 posts it)\n{text}\n");
+            continue;
+        }
+        // A channel takes about 20 posts a minute; stay well under that.
+        if posted > 0 {
+            tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+        }
+        if let Some(m) = telegram::announce(&app, id, &text).await? {
+            println!("announced {id} (message {m})");
+            posted += 1;
+        }
     }
     Ok(())
 }

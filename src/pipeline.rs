@@ -1,7 +1,8 @@
 //! The build pipeline: one paper in, one published course out.
 //!
 //! ingest → outline → lessons (in parallel) → browser QA → review → repair
-//! (at most two rounds) → publish. Every stage writes its result to
+//! (at most two rounds) → publish, then a post on the Telegram channel if one
+//! is set up (telegram.rs). Every stage writes its result to
 //! `course_artifacts` before the next starts, so a job that dies (deploy,
 //! crash, lost lease) resumes from where it was without paying again.
 //!
@@ -26,6 +27,7 @@ use crate::db;
 use crate::ingest::{self, Paper, Unsupported};
 use crate::llm::{LlmError, Request, Usage};
 use crate::qa;
+use crate::telegram;
 
 const SYSTEM: &str = include_str!("../prompts/system.md");
 const OUTLINE: &str = include_str!("../prompts/outline.md");
@@ -350,6 +352,19 @@ impl Job {
         ))
         .await;
         app.emit(&self.id, "ready", "The course is ready").await;
+        // Tell the Telegram channel, once. The course is out either way, so a
+        // failure here is only noted.
+        if cfg.publish {
+            let text = telegram::message(&meta, &outline, &lessons, &telegram::link(&cfg.public_origin, &self.id));
+            match telegram::announce(app, &self.id, &text).await {
+                Ok(Some(m)) => self.note(&format!("announced on Telegram (message {m})")).await,
+                Ok(None) => {}
+                Err(e) => {
+                    log::warn!("{}: the Telegram announcement failed: {e:#}", self.id);
+                    self.note(&format!("the Telegram announcement failed: {e:#}")).await;
+                }
+            }
+        }
         Ok(())
     }
 
