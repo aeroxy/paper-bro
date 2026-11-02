@@ -22,10 +22,23 @@ pub fn link(origin: &str, id: &str) -> String {
     format!("{origin}{BASE}/abs/{id}")
 }
 
+/// At most `max` characters of `s`, cut at a space and marked with an
+/// ellipsis.
+fn clip(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let head: String = s.chars().take(max).collect();
+    let head = head.rsplit_once(' ').map_or(head.as_str(), |(h, _)| h);
+    format!("{}…", head.trim_end())
+}
+
 /// The announcement, in Telegram's HTML: the course's title and lede, the
 /// paper it teaches (linked to arXiv) and its authors, what it holds, and the
 /// link. Everything quoted is escaped: the title and the lede are the model's,
-/// the rest is arXiv's.
+/// the rest is arXiv's. Neither has a hard limit, and Telegram refuses a
+/// message over 4096 characters, so each is clipped to keep the whole well
+/// under that.
 pub fn message(meta: &Meta, outline: &Outline, lessons: &[Lesson], url: &str) -> String {
     let authors = match meta.authors.as_slice() {
         [a, b, c, _, ..] => format!("{a}, {b}, {c} et al."),
@@ -38,10 +51,10 @@ pub fn message(meta: &Meta, outline: &Outline, lessons: &[Lesson], url: &str) ->
     };
     format!(
         "<b>{title}</b>\n\n{lede}\n\n📄 <a href=\"https://arxiv.org/abs/{id}\">{paper}</a>\n{authors}\n🧪 {n} lessons{labs}\n\n<a href=\"{url}\">Open the course →</a>",
-        title = esc(&outline.course_title),
-        lede = esc(&outline.lede),
-        paper = esc(&meta.title),
-        authors = esc(&authors),
+        title = esc(&clip(&outline.course_title, 150)),
+        lede = esc(&clip(&outline.lede, 1000)),
+        paper = esc(&clip(&meta.title, 300)),
+        authors = esc(&clip(&authors, 250)),
         id = esc(&meta.id),
         n = lessons.len(),
         url = esc(url),
@@ -72,22 +85,31 @@ pub async fn send(tg: &Telegram, text: &str) -> Result<i64> {
     body["result"]["message_id"].as_i64().context("Telegram reply without a message id")
 }
 
-/// True once the course has been posted.
+/// True once the course has been posted; a post under way doesn't count.
 pub async fn announced(app: &App, id: &str) -> Result<bool> {
-    Ok(db::artifact(&app.pool, id, db::ANNOUNCED).await?.is_some())
+    Ok(db::artifact(&app.pool, id, db::ANNOUNCED).await?.is_some_and(|body| body != db::PENDING))
 }
 
 /// Post a published course, unless it has been already, and record it.
 /// Returns the message's id, or None when there was nothing to do: no
-/// TELEGRAM_* settings, or the course was announced before.
+/// TELEGRAM_* settings, or another process posted it or is posting it.
 pub async fn announce(app: &App, id: &str, text: &str) -> Result<Option<i64>> {
     let Some(tg) = &app.cfg.telegram else { return Ok(None) };
-    if announced(app, id).await? {
+    // A publishing worker and `paper-bro announce` can reach the same course
+    // at once; the claim lets only one of them post.
+    if !db::claim_announcement(&app.pool, id).await? {
         return Ok(None);
     }
-    let message_id = send(tg, text).await?;
-    db::put_artifact(&app.pool, id, db::ANNOUNCED, &message_id.to_string()).await?;
-    Ok(Some(message_id))
+    match send(tg, text).await {
+        Ok(message_id) => {
+            db::put_artifact(&app.pool, id, db::ANNOUNCED, &message_id.to_string()).await?;
+            Ok(Some(message_id))
+        }
+        Err(e) => {
+            db::release_announcement(&app.pool, id).await?;
+            Err(e)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -110,6 +132,20 @@ mod tests {
         meta.authors.truncate(3);
         let short = message(&meta, &outline, &lessons, "u");
         assert!(short.contains("</a>\nA, B, C\n🧪"), "{short}");
+    }
+
+    #[test]
+    fn a_runaway_title_or_lede_is_clipped_so_that_telegram_takes_the_message() {
+        let (meta, mut outline, lessons) = crate::sample::course();
+        outline.course_title = "T".repeat(500);
+        outline.lede = "word & ".repeat(2000);
+        let m = message(&meta, &outline, &lessons, "https://aero.example/paper-bro/abs/0000.00000");
+        // The markup counts too, so this is stricter than Telegram's own limit.
+        assert!(m.encode_utf16().count() < 4096, "{} UTF-16 units", m.encode_utf16().count());
+        assert!(m.starts_with(&format!("<b>{}…</b>", "T".repeat(150))), "{m}");
+        assert!(m.contains("word &amp; word…\n\n📄 "), "the lede ends at a word, then the rest follows: {m}");
+        assert!(m.ends_with("Open the course →</a>"), "{m}");
+        assert_eq!(clip("short", 10), "short");
     }
 
     #[test]

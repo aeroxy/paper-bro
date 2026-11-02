@@ -302,9 +302,12 @@ async fn announce(id: Option<&str>) -> Result<()> {
         if posted > 0 {
             tokio::time::sleep(std::time::Duration::from_secs(4)).await;
         }
-        if let Some(m) = telegram::announce(&app, id, &text).await? {
-            println!("announced {id} (message {m})");
-            posted += 1;
+        match telegram::announce(&app, id, &text).await? {
+            Some(m) => {
+                println!("announced {id} (message {m})");
+                posted += 1;
+            }
+            None => println!("{id} was posted, or is being posted, by another process"),
         }
     }
     Ok(())
