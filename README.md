@@ -149,7 +149,10 @@ an AppArmor profile. Never run it with `--no-sandbox`.
   a republish doesn't post it again. A failed post is noted with the course's
   events and doesn't fail the build. `paper-bro announce [<arxiv id>]` posts
   a course published before, or every one not posted yet; without
-  `PUBLISH=1` it only prints the messages.
+  `PUBLISH=1` it only prints the messages. If Telegram's reply to a post is
+  lost (a timeout, say), the post may have gone through, so the course is
+  left out of every retry until someone looks at the channel;
+  `paper-bro announce <arxiv id> --again` posts it if it isn't there.
 
 Admin, from the host itself:
 

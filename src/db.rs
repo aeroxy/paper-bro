@@ -336,14 +336,17 @@ pub async fn requeue_previews(pool: &PgPool) -> Result<u64> {
 }
 
 /// The artifact recording a course's announcement on Telegram (telegram.rs):
-/// the message's id, or `PENDING` while a post is under way.
+/// the message's id, `PENDING` while a post is under way, or `UNCONFIRMED`
+/// when a post's reply was lost and the channel may have it.
 pub const ANNOUNCED: &str = "telegram";
 pub const PENDING: &str = "pending";
+pub const UNCONFIRMED: &str = "unconfirmed";
 
 /// Claim a course's announcement before posting it: true for exactly one
 /// caller, however many reach the course at once. A claim whose post never
 /// finished (still pending after ten minutes; a post gives up after 30
-/// seconds) can be taken over.
+/// seconds) can be taken over. An unconfirmed one never is: it waits for
+/// someone to look at the channel.
 pub async fn claim_announcement(pool: &PgPool, id: &str) -> Result<bool> {
     let done = sqlx::query(
         "INSERT INTO course_artifacts (arxiv_id, key, body) VALUES ($1, $2, $3)
@@ -358,11 +361,26 @@ pub async fn claim_announcement(pool: &PgPool, id: &str) -> Result<bool> {
     Ok(done.rows_affected() == 1)
 }
 
-/// Give a claim back after a failed post, so that a later try can post.
-pub async fn release_announcement(pool: &PgPool, id: &str) -> Result<()> {
+/// Give a claim in `state` back, so that a later try can post: a pending one
+/// after a post that surely failed, or an unconfirmed one once someone has
+/// found the post missing from the channel.
+pub async fn release_announcement(pool: &PgPool, id: &str, state: &str) -> Result<()> {
     sqlx::query("DELETE FROM course_artifacts WHERE arxiv_id = $1 AND key = $2 AND body = $3")
         .bind(id)
         .bind(ANNOUNCED)
+        .bind(state)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Keep the claim of a post whose reply was lost, out of reach of the
+/// takeover and the backfill: posting again could post it twice.
+pub async fn mark_unconfirmed(pool: &PgPool, id: &str) -> Result<()> {
+    sqlx::query("UPDATE course_artifacts SET body = $3 WHERE arxiv_id = $1 AND key = $2 AND body = $4")
+        .bind(id)
+        .bind(ANNOUNCED)
+        .bind(UNCONFIRMED)
         .bind(PENDING)
         .execute(pool)
         .await?;
@@ -381,7 +399,8 @@ pub async fn clear_artifacts(pool: &PgPool, id: &str) -> Result<()> {
 }
 
 /// Courses published to AERO and not announced yet, oldest first. One with a
-/// post under way is listed; its claim decides who posts.
+/// post under way is listed (its claim decides who posts); an unconfirmed one
+/// isn't.
 pub async fn unannounced(pool: &PgPool) -> Result<Vec<String>> {
     let rows: Vec<(String,)> = sqlx::query_as(
         "SELECT arxiv_id FROM courses c
