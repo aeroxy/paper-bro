@@ -127,8 +127,11 @@ pub async fn announce(app: &App, id: &str, text: &str) -> Result<Option<i64>> {
     }
     // From here the channel may get the post, so the claim must not expire
     // whatever happens next. If this write fails, nothing has been sent, and
-    // the pending claim expires harmlessly.
-    db::mark_unconfirmed(&app.pool, id).await?;
+    // the pending claim expires harmlessly. If it finds the claim gone, this
+    // process stalled past the takeover, and the one that took over posts.
+    if !db::mark_unconfirmed(&app.pool, id).await? {
+        return Ok(None);
+    }
     match send(tg, text).await {
         // Should recording the id fail, the claim stays unconfirmed: the course
         // is posted, and won't be again.

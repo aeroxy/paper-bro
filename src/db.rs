@@ -377,16 +377,18 @@ pub async fn release_announcement(pool: &PgPool, id: &str) -> Result<()> {
 /// Just before sending: from here the post may exist, so the claim must not
 /// expire, whether the reply is lost, its id can't be recorded, or the
 /// process stops. An unconfirmed claim is out of reach of the takeover and
-/// the backfill: posting again could post it twice.
-pub async fn mark_unconfirmed(pool: &PgPool, id: &str) -> Result<()> {
-    sqlx::query("UPDATE course_artifacts SET body = $3 WHERE arxiv_id = $1 AND key = $2 AND body = $4")
+/// the backfill: posting again could post it twice. False when the claim is
+/// no longer pending: a process that stalled past the takeover finds that
+/// the one that took over has marked it, and must not send.
+pub async fn mark_unconfirmed(pool: &PgPool, id: &str) -> Result<bool> {
+    let done = sqlx::query("UPDATE course_artifacts SET body = $3 WHERE arxiv_id = $1 AND key = $2 AND body = $4")
         .bind(id)
         .bind(ANNOUNCED)
         .bind(UNCONFIRMED)
         .bind(PENDING)
         .execute(pool)
         .await?;
-    Ok(())
+    Ok(done.rows_affected() == 1)
 }
 
 /// Drop every checkpoint, so a forced rebuild starts from scratch. The record
