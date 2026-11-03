@@ -402,6 +402,18 @@ pub async fn clear_artifacts(pool: &PgPool, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Courses whose post may or may not have reached the channel (unconfirmed),
+/// oldest first: someone has to look before they are posted again.
+pub async fn unconfirmed(pool: &PgPool) -> Result<Vec<String>> {
+    let rows: Vec<(String,)> =
+        sqlx::query_as("SELECT arxiv_id FROM course_artifacts WHERE key = $1 AND body = $2 ORDER BY created_at")
+            .bind(ANNOUNCED)
+            .bind(UNCONFIRMED)
+            .fetch_all(pool)
+            .await?;
+    Ok(rows.into_iter().map(|r| r.0).collect())
+}
+
 /// Courses published to AERO and not announced yet, oldest first. One whose
 /// claim is still pending is listed (the claim decides who posts); an
 /// unconfirmed one isn't.
