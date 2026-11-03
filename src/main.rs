@@ -317,7 +317,7 @@ async fn announce(id: Option<&str>, again: bool) -> Result<()> {
             continue;
         }
         if again {
-            db::release_announcement(&app.pool, id, db::UNCONFIRMED).await?;
+            db::release_announcement(&app.pool, id).await?;
         }
         // A channel takes about 20 posts a minute; stay well under that.
         if posted > 0 {

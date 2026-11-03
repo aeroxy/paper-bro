@@ -5,7 +5,7 @@
 //! with the course's artifacts (`db::ANNOUNCED`), so a rebuild, a republish or
 //! a retried job never posts a course twice.
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -125,24 +125,28 @@ pub async fn announce(app: &App, id: &str, text: &str) -> Result<Option<i64>> {
     if !db::claim_announcement(&app.pool, id).await? {
         return Ok(None);
     }
+    // From here the channel may get the post, so the claim must not expire
+    // whatever happens next. If this write fails, nothing has been sent, and
+    // the pending claim expires harmlessly.
+    db::mark_unconfirmed(&app.pool, id).await?;
     match send(tg, text).await {
+        // Should recording the id fail, the claim stays unconfirmed: the course
+        // is posted, and won't be again.
         Ok(message_id) => {
-            db::put_artifact(&app.pool, id, db::ANNOUNCED, &message_id.to_string()).await?;
+            db::put_artifact(&app.pool, id, db::ANNOUNCED, &message_id.to_string())
+                .await
+                .with_context(|| format!("{id} was posted (message {message_id}), but that wasn't recorded; it stays held back"))?;
             Ok(Some(message_id))
         }
         // Nothing was posted: give the claim back, so that a later try can post.
         Err(SendError::NotPosted(e)) => {
-            db::release_announcement(&app.pool, id, db::PENDING).await?;
+            db::release_announcement(&app.pool, id).await.with_context(|| format!("{e:#}; {id} stays held back"))?;
             Err(e)
         }
-        // It may be on the channel: posting again could post it twice, so the
-        // course stays claimed until someone looks.
-        Err(SendError::Unknown(e)) => {
-            db::mark_unconfirmed(&app.pool, id).await?;
-            Err(e.context(format!(
-                "the post may have reached the channel anyway; if it isn't there, `paper-bro announce {id} --again` posts it"
-            )))
-        }
+        // It may be on the channel: the claim stays unconfirmed until someone looks.
+        Err(SendError::Unknown(e)) => Err(e.context(format!(
+            "the post may have reached the channel anyway; if it isn't there, `paper-bro announce {id} --again` posts it"
+        ))),
     }
 }
 
