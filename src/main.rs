@@ -27,7 +27,8 @@ const USAGE: &str = "usage: paper-bro <command>
   republish ID     rebuild a finished course's page from its stored lessons with the
                    current shell, check it in the browser, and update it (no model calls)
   announce [ID]    post a published course (default: every one not posted yet) to the
-                   Telegram channel, once; without PUBLISH=1 it prints the messages
+                   Telegram channel, once; without PUBLISH=1 it prints the messages.
+                   With --again, post one whose earlier post may or may not have arrived
   ingest ID        fetch a paper and write the text the model reads to tmp/
   qa-sample [nohang]  run browser QA on a hand-written course with broken labs
   migrate          apply database migrations";
@@ -48,8 +49,16 @@ async fn main() -> Result<()> {
             republish(&id.id).await
         }
         Some("announce") => {
-            let id = args.get(1).map(|s| arxiv::PaperId::parse(s).context("usage: announce [arxiv id]")).transpose()?;
-            announce(id.as_ref().map(|i| i.id.as_str())).await
+            let again = args[1..].iter().any(|a| a == "--again");
+            let id = args[1..]
+                .iter()
+                .find(|a| *a != "--again")
+                .map(|s| arxiv::PaperId::parse(s).context("usage: announce [arxiv id [--again]]"))
+                .transpose()?;
+            if again && id.is_none() {
+                bail!("usage: announce <arxiv id> --again");
+            }
+            announce(id.as_ref().map(|i| i.id.as_str()), again).await
         }
         Some("ingest") => {
             let id = args.get(1).and_then(|s| arxiv::PaperId::parse(s)).context("usage: ingest <arxiv id>")?;
@@ -270,8 +279,10 @@ async fn stored(pool: &sqlx::PgPool, id: &str) -> Result<(arxiv::Meta, db::Cours
 /// Post published courses to the Telegram channel, each once: the one named,
 /// or every one not posted yet, oldest first. A new course is announced when
 /// it is published; this is for the ones from before, or a post that failed.
-/// Without `PUBLISH=1` it only prints the messages.
-async fn announce(id: Option<&str>) -> Result<()> {
+/// A post whose reply was lost may have arrived, so it is left alone until
+/// someone has looked at the channel and asks for it `again`. Without
+/// `PUBLISH=1` it only prints the messages.
+async fn announce(id: Option<&str>, again: bool) -> Result<()> {
     let app = app::App::new(config::Config::from_env_for(false)?).await?;
     if app.cfg.publish && app.cfg.telegram.is_none() {
         bail!("set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to announce");
@@ -285,9 +296,16 @@ async fn announce(id: Option<&str>) -> Result<()> {
     }
     let mut posted = 0;
     for id in &ids {
-        if telegram::announced(&app, id).await? {
-            println!("{id} was announced already");
-            continue;
+        match db::artifact(&app.pool, id, db::ANNOUNCED).await?.as_deref() {
+            Some(db::UNCONFIRMED) if !again => {
+                println!("{id}: an earlier post may have reached the channel; if it isn't there, `announce {id} --again` posts it");
+                continue;
+            }
+            Some(state) if state != db::PENDING && state != db::UNCONFIRMED => {
+                println!("{id} was announced already");
+                continue;
+            }
+            _ => {}
         }
         let (meta, row, outline, lessons) = stored(&app.pool, id).await?;
         if row.aero_url.is_none() || row.aero_page_id.as_deref() == Some("preview") {
@@ -297,6 +315,9 @@ async fn announce(id: Option<&str>) -> Result<()> {
         if !app.cfg.publish {
             println!("--- {id} (dry run; PUBLISH=1 posts it)\n{text}\n");
             continue;
+        }
+        if again {
+            db::release_announcement(&app.pool, id, db::UNCONFIRMED).await?;
         }
         // A channel takes about 20 posts a minute; stay well under that.
         if posted > 0 {

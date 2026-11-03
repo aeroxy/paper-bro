@@ -5,7 +5,7 @@
 //! with the course's artifacts (`db::ANNOUNCED`), so a rebuild, a republish or
 //! a retried job never posts a course twice.
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -61,33 +61,58 @@ pub fn message(meta: &Meta, outline: &Outline, lessons: &[Lesson], url: &str) ->
     )
 }
 
-/// Post `text` to the channel; returns the message's id.
-pub async fn send(tg: &Telegram, text: &str) -> Result<i64> {
-    let http = reqwest::Client::builder().timeout(Duration::from_secs(30)).build()?;
-    // The token is part of the URL, and reqwest quotes the URL in its errors:
-    // strip it, so that a failure never writes the token into a log.
-    let resp = http
-        .post(format!("https://api.telegram.org/bot{}/sendMessage", tg.token))
-        .json(&json!({
-            "chat_id": tg.chat_id,
-            "text": text,
-            "parse_mode": "HTML",
-            // The course page's preview would only repeat its title and lede.
-            "link_preview_options": {"is_disabled": true},
-        }))
-        .send()
-        .await
-        .map_err(|e| anyhow!("Telegram request failed: {}", e.without_url()))?;
-    let body: Value = resp.json().await.map_err(|e| anyhow!("unreadable Telegram reply: {}", e.without_url()))?;
-    if body["ok"].as_bool() != Some(true) {
-        bail!("Telegram refused the message: {}", body["description"].as_str().unwrap_or("no reason given"));
-    }
-    body["result"]["message_id"].as_i64().context("Telegram reply without a message id")
+/// How a post failed, and so whether the channel may have it anyway.
+#[derive(Debug)]
+enum SendError {
+    /// The request never reached Telegram, or Telegram refused it: nothing was
+    /// posted, and posting again is safe.
+    NotPosted(anyhow::Error),
+    /// Telegram may have taken it, but its reply was lost: a timeout, an
+    /// unreadable reply, or one without a message id.
+    Unknown(anyhow::Error),
 }
 
-/// True once the course has been posted; a post under way doesn't count.
-pub async fn announced(app: &App, id: &str) -> Result<bool> {
-    Ok(db::artifact(&app.pool, id, db::ANNOUNCED).await?.is_some_and(|body| body != db::PENDING))
+/// Post `text` to the channel; returns the message's id.
+async fn send(tg: &Telegram, text: &str) -> Result<i64, SendError> {
+    let payload = json!({
+        "chat_id": tg.chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        // The course page's preview would only repeat its title and lede.
+        "link_preview_options": {"is_disabled": true},
+    });
+    post(&format!("https://api.telegram.org/bot{}/sendMessage", tg.token), &payload, Duration::from_secs(30)).await
+}
+
+/// One Bot API call that posts a message.
+async fn post(url: &str, payload: &Value, timeout: Duration) -> Result<i64, SendError> {
+    use SendError::{NotPosted, Unknown};
+    let http = reqwest::Client::builder().timeout(timeout).build().map_err(|e| NotPosted(e.into()))?;
+    // The token is part of the URL, and reqwest quotes the URL in its errors:
+    // strip it, so that a failure never writes the token into a log.
+    let resp = http.post(url).json(payload).send().await.map_err(|e| {
+        // Only a failed connection proves that the request never got there.
+        let connect = e.is_connect();
+        let why = anyhow!("Telegram request failed: {}", e.without_url());
+        if connect { NotPosted(why) } else { Unknown(why) }
+    })?;
+    let reply: Value = resp.json().await.map_err(|e| Unknown(anyhow!("unreadable Telegram reply: {}", e.without_url())))?;
+    outcome(&reply)
+}
+
+/// What Telegram's reply says about a post: its message id, or how it failed.
+fn outcome(reply: &Value) -> Result<i64, SendError> {
+    use SendError::{NotPosted, Unknown};
+    match reply["ok"].as_bool() {
+        Some(true) => reply["result"]["message_id"].as_i64().ok_or_else(|| Unknown(anyhow!("Telegram took the message but sent no message id"))),
+        Some(false) => {
+            let why = anyhow!("Telegram refused the message: {}", reply["description"].as_str().unwrap_or("no reason given"));
+            // A refusal is final, except Telegram's own failure (5xx), after
+            // which the post may exist or not.
+            Err(if reply["error_code"].as_i64().is_some_and(|c| c >= 500) { Unknown(why) } else { NotPosted(why) })
+        }
+        None => Err(Unknown(anyhow!("a reply that isn't Telegram's"))),
+    }
 }
 
 /// Post a published course, unless it has been already, and record it.
@@ -105,9 +130,18 @@ pub async fn announce(app: &App, id: &str, text: &str) -> Result<Option<i64>> {
             db::put_artifact(&app.pool, id, db::ANNOUNCED, &message_id.to_string()).await?;
             Ok(Some(message_id))
         }
-        Err(e) => {
-            db::release_announcement(&app.pool, id).await?;
+        // Nothing was posted: give the claim back, so that a later try can post.
+        Err(SendError::NotPosted(e)) => {
+            db::release_announcement(&app.pool, id, db::PENDING).await?;
             Err(e)
+        }
+        // It may be on the channel: posting again could post it twice, so the
+        // course stays claimed until someone looks.
+        Err(SendError::Unknown(e)) => {
+            db::mark_unconfirmed(&app.pool, id).await?;
+            Err(e.context(format!(
+                "the post may have reached the channel anyway; if it isn't there, `paper-bro announce {id} --again` posts it"
+            )))
         }
     }
 }
@@ -146,6 +180,54 @@ mod tests {
         assert!(m.contains("word &amp; word…\n\n📄 "), "the lede ends at a word, then the rest follows: {m}");
         assert!(m.ends_with("Open the course →</a>"), "{m}");
         assert_eq!(clip("short", 10), "short");
+    }
+
+    #[test]
+    fn a_refusal_is_final_but_a_reply_that_says_nothing_clear_is_not() {
+        let posted = |v: Value| matches!(outcome(&v), Ok(7));
+        let not_posted = |v: Value| matches!(outcome(&v), Err(SendError::NotPosted(_)));
+        let unknown = |v: Value| matches!(outcome(&v), Err(SendError::Unknown(_)));
+        assert!(posted(json!({"ok": true, "result": {"message_id": 7}})));
+        assert!(not_posted(json!({"ok": false, "error_code": 400, "description": "Bad Request: chat not found"})));
+        assert!(not_posted(json!({"ok": false, "error_code": 429, "description": "Too Many Requests: retry after 5"})));
+        assert!(unknown(json!({"ok": false, "error_code": 502, "description": "Bad Gateway"})));
+        assert!(unknown(json!({"ok": true, "result": {}})));
+        assert!(unknown(json!({"something": "else"})));
+    }
+
+    /// A stand-in for the Bot API that answers every request with `reply`
+    /// after `delay`. Its address carries a token, as the real one does.
+    async fn fake_telegram(delay: Duration, reply: &'static str) -> String {
+        let app = axum::Router::new().fallback(move || async move {
+            tokio::time::sleep(delay).await;
+            reply
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/botSECRET123/sendMessage", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        url
+    }
+
+    #[tokio::test]
+    async fn only_a_post_that_surely_failed_counts_as_not_posted() {
+        let payload = json!({"text": "x"});
+        let quick = Duration::from_millis(500);
+        // Nobody listening: the request never left this machine.
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+        assert!(matches!(post(&format!("http://{closed}/botSECRET123/sendMessage"), &payload, quick).await, Err(SendError::NotPosted(_))));
+        // Telegram refused it.
+        let url = fake_telegram(Duration::ZERO, r#"{"ok":false,"error_code":400,"description":"Bad Request"}"#).await;
+        assert!(matches!(post(&url, &payload, quick).await, Err(SendError::NotPosted(_))));
+        // No reply in time, or one that can't be read: it may have been posted.
+        let url = fake_telegram(Duration::from_secs(5), "{}").await;
+        let timed_out = post(&url, &payload, quick).await;
+        assert!(matches!(timed_out, Err(SendError::Unknown(_))), "{timed_out:?}");
+        assert!(!format!("{timed_out:?}").contains("SECRET123"), "the token leaked: {timed_out:?}");
+        let url = fake_telegram(Duration::ZERO, "<html>Bad Gateway</html>").await;
+        assert!(matches!(post(&url, &payload, quick).await, Err(SendError::Unknown(_))));
+        // And a post Telegram took.
+        let url = fake_telegram(Duration::ZERO, r#"{"ok":true,"result":{"message_id":42}}"#).await;
+        assert!(matches!(post(&url, &payload, quick).await, Ok(42)));
     }
 
     #[test]
