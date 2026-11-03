@@ -287,18 +287,23 @@ async fn announce(id: Option<&str>, again: bool) -> Result<()> {
     if app.cfg.publish && app.cfg.telegram.is_none() {
         bail!("set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to announce");
     }
-    let ids = match id {
-        Some(id) => vec![id.to_string()],
-        None => db::unannounced(&app.pool).await?,
+    let held_back = |id: &str| println!("{id}: an earlier post may have reached the channel; if it isn't there, `announce {id} --again` posts it");
+    let (ids, held) = match id {
+        Some(id) => (vec![id.to_string()], vec![]),
+        // The unconfirmed ones aren't posted from here, but someone has to know.
+        None => (db::unannounced(&app.pool).await?, db::unconfirmed(&app.pool).await?),
     };
-    if ids.is_empty() {
+    if ids.is_empty() && held.is_empty() {
         println!("every published course has been announced");
+    }
+    for id in &held {
+        held_back(id);
     }
     let mut posted = 0;
     for id in &ids {
         match db::artifact(&app.pool, id, db::ANNOUNCED).await?.as_deref() {
             Some(db::UNCONFIRMED) if !again => {
-                println!("{id}: an earlier post may have reached the channel; if it isn't there, `announce {id} --again` posts it");
+                held_back(id);
                 continue;
             }
             Some(state) if state != db::PENDING && state != db::UNCONFIRMED => {
