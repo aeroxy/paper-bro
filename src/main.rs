@@ -339,6 +339,8 @@ async fn announce(id: Option<&str>, again: bool) -> Result<()> {
     Ok(())
 }
 
+/// `ingest ID`: read one paper the way a build does and print what arXiv
+/// returned, without the database or the model.
 async fn ingest_one(id: &str) -> Result<()> {
     let client = arxiv::Client::new()?;
     let meta = client.meta(id).await?.context("no such paper")?;
