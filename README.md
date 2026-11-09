@@ -141,6 +141,11 @@ an AppArmor profile. Never run it with `--no-sandbox`.
   Pages is switched on once by hand: Settings → Pages → Deploy from a branch
   → `main`, `/ (root)`. At startup a publishing server logs whether it can
   get a token for the repo; "publishing will fail" means every build would.
+- **Search:** a course page names paper-bro's own `/paper-bro/abs/<id>` as its
+  canonical URL, and `/paper-bro/sitemap.xml` lists every published course at
+  that address. It redirects to wherever the page is hosted, so moving the
+  pages again changes no indexed address. Submit the sitemap in Google Search
+  Console. Existing pages get the new head with `republish`.
 - **Spend:** set a budget on your model provider's account too.
   `DAILY_BUDGET_USD` is paper-bro's own guard.
 - **Updating a published course:** `paper-bro republish <arxiv id>` rebuilds a

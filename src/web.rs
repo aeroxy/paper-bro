@@ -52,6 +52,7 @@ pub fn public(app: Arc<App>) -> Router {
         .route("/api/courses", get(courses))
         .route("/api/lab-errors", post(lab_error))
         .route("/api/report", post(report))
+        .route("/sitemap.xml", get(sitemap))
         .route("/abs/{*id}", get(paper_page))
         .route("/pdf/{*id}", get(paper_page))
         .route("/html/{*id}", get(paper_page))
@@ -159,6 +160,30 @@ async fn paper(State(app): AppState, Query(q): Query<IdQuery>) -> Response {
         Ok(v) => Json(v).into_response(),
         Err(r) => r,
     }
+}
+
+/// Every published course at its lasting address (`course::course_url`), for
+/// search engines. A course page names the same address as its canonical URL,
+/// and the address redirects to wherever the page is hosted, so a move to
+/// another host changes no entry here.
+async fn sitemap(State(app): AppState) -> Response {
+    let courses: Vec<db::CourseRow> = app.courses.read().unwrap().values().cloned().collect();
+    ([(header::CONTENT_TYPE, "application/xml; charset=utf-8")], sitemap_xml(&app.cfg.public_origin, &courses)).into_response()
+}
+
+fn sitemap_xml(origin: &str, courses: &[db::CourseRow]) -> String {
+    let mut published: Vec<&db::CourseRow> =
+        courses.iter().filter(|c| c.status == "ready" && c.aero_page_id.as_deref().is_some_and(|p| p != "preview")).collect();
+    published.sort_by(|a, b| a.arxiv_id.cmp(&b.arxiv_id));
+    let mut xml = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n<url><loc>{origin}{BASE}/</loc></url>\n"
+    );
+    for c in published {
+        let lastmod = c.finished_at.map(|t| format!("<lastmod>{}</lastmod>", t.format("%Y-%m-%d"))).unwrap_or_default();
+        xml.push_str(&format!("<url><loc>{}</loc>{lastmod}</url>\n", crate::course::course_url(origin, &c.arxiv_id)));
+    }
+    xml.push_str("</urlset>\n");
+    xml
 }
 
 /// When a course that failed for no reason of its own may be built again: an
@@ -539,6 +564,35 @@ async fn admin_remove(State(app): AppState, Path(raw): Path<String>) -> Response
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_sitemap_lists_published_courses_at_their_lasting_address() {
+        let at = chrono::DateTime::parse_from_rfc3339("2026-11-09T09:49:12Z").unwrap().with_timezone(&chrono::Utc);
+        let row = |id: &str, status: &str, page: Option<&str>| db::CourseRow {
+            arxiv_id: id.into(),
+            status: status.into(),
+            stage: None,
+            aero_page_id: page.map(Into::into),
+            aero_url: None,
+            error: None,
+            title: String::new(),
+            requested_at: at,
+            finished_at: Some(at),
+        };
+        let xml = sitemap_xml(
+            "https://aero.example",
+            &[
+                row("2610.39302", "ready", Some("arxiv-2610-39302.html")),
+                row("hep-th/9711200", "ready", Some("arxiv-hep-th-9711200.html")),
+                row("1706.03762", "failed", None),
+                row("2306.05243", "ready", Some("preview")),
+            ],
+        );
+        assert!(xml.contains("<url><loc>https://aero.example/paper-bro/</loc></url>"), "{xml}");
+        assert!(xml.contains("<url><loc>https://aero.example/paper-bro/abs/2610.39302</loc><lastmod>2026-11-09</lastmod></url>"), "{xml}");
+        assert!(xml.contains("<loc>https://aero.example/paper-bro/abs/hep-th/9711200</loc>"), "{xml}");
+        assert!(!xml.contains("1706.03762") && !xml.contains("2306.05243"), "only published courses: {xml}");
+    }
 
     #[test]
     fn a_failed_course_can_be_retried_an_hour_after_it_stopped() {
