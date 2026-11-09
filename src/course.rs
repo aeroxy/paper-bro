@@ -350,6 +350,7 @@ fn head(c: &Course, origin: &str, title: &str) -> String {
 <meta http-equiv="Content-Security-Policy" content="{csp}">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+{ga}
 <title>{title}</title>
 <meta name="description" content="{desc}">
 <meta name="paper-bro" content="{id}">
@@ -370,6 +371,9 @@ fn head(c: &Course, origin: &str, title: &str) -> String {
 </head>
 "#,
         csp = csp(origin),
+        // AERO added this tag to the courses it served; GitHub Pages serves
+        // the file as it is. Browser QA blocks it, so test runs aren't counted.
+        ga = crate::web::analytics_tag(crate::web::GA_ID),
         desc = esc(&c.outline.lede),
         id = esc(&c.meta.id),
         url = esc(&url),
@@ -672,6 +676,9 @@ mod tests {
         assert!(html.contains(&format!(r#"<link rel="canonical" href="{url}">"#)), "no canonical");
         assert!(html.contains(&format!(r#"<meta property="og:url" content="{url}">"#)), "no og:url");
         assert!(html.contains(&format!(r#"<link rel="icon" href="{ICON}">"#)), "no icon");
+        let (csp, ga) = (html.find("Content-Security-Policy").unwrap(), html.find("googletagmanager.com/gtag/js").unwrap());
+        assert!(csp < ga, "the analytics tag comes after the CSP, so the policy covers it");
+        assert_eq!(html.matches(crate::web::GA_ID).count(), 2, "one gtag.js load and one config call");
         let ld = html.split(r#"<script type="application/ld+json">"#).nth(1).unwrap().split("</script>").next().unwrap();
         let ld: Value = serde_json::from_str(ld).unwrap();
         assert_eq!(ld["@type"], "Course");
