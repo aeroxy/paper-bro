@@ -342,7 +342,8 @@ async fn announce(id: Option<&str>, again: bool) -> Result<()> {
 async fn ingest_one(id: &str) -> Result<()> {
     let client = arxiv::Client::new()?;
     let meta = client.meta(id).await?.context("no such paper")?;
-    println!("{} v{} — {}\nlicense: {:?}\ncategories: {:?}", meta.id, meta.version, meta.title, meta.license, meta.categories);
+    let license = client.license(id).await.map_err(|e| format!("{e:#}"));
+    println!("{} v{} — {}\nlicense: {license:?}\ncategories: {:?}", meta.id, meta.version, meta.title, meta.categories);
     let paper = match client.html(id, meta.version).await? {
         Some((url, html)) => ingest::from_latexml(&url, &html)?,
         None => match client.eprint(id, meta.version).await? {
