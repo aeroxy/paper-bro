@@ -118,17 +118,30 @@ impl Telegram {
     }
 }
 
-// No Debug: it holds the database URL and the AERO token.
+/// Where courses are published: a GitHub Pages repo that the aero-oops-wtf
+/// GitHub App can write to (see `github.rs`).
+#[derive(Clone, Debug)]
+pub struct GitHub {
+    /// The App's private key (PEM). Only publishing needs it.
+    pub key_path: Option<PathBuf>,
+    /// The App's client id, the JWT's `iss`.
+    pub client_id: String,
+    pub repo: String,
+    pub branch: String,
+    /// Where Pages serves `repo`, without a trailing slash.
+    pub site_url: String,
+}
+
+// No Debug: it holds the database URL.
 #[derive(Clone)]
 pub struct Config {
     pub database_url: String,
     pub endpoint: Endpoint,
-    pub aero_token: String,
-    pub aero_mcp_url: String,
-    /// Origin the published courses and paper-bro itself are served from.
+    pub github: GitHub,
+    /// Origin paper-bro itself is served from. Course pages link back to it.
     pub public_origin: String,
     /// When false, a finished course is kept in the database and served from
-    /// `/paper-bro/preview/{alias}` instead of being published to AERO.
+    /// `/paper-bro/preview/{alias}` instead of being published.
     pub publish: bool,
     pub chrome: PathBuf,
     pub listen: SocketAddr,
@@ -184,8 +197,13 @@ impl Config {
         Ok(Self {
             database_url: required("NEON_DB")?,
             endpoint,
-            aero_token: required("AERO_TOKEN")?,
-            aero_mcp_url: var("AERO_MCP_URL").unwrap_or_else(|| "https://aero.oops.wtf/mcp".into()),
+            github: GitHub {
+                key_path: var("GH_APP_KEY_PATH").map(PathBuf::from),
+                client_id: var("GH_APP_CLIENT_ID").unwrap_or_else(|| "Iv23ct6Af6GiLQbF11j9".into()),
+                repo: var("GH_REPO").unwrap_or_else(|| "paper-bro/paper-bro.github.io".into()),
+                branch: var("GH_BRANCH").unwrap_or_else(|| "main".into()),
+                site_url: var("SITE_URL").unwrap_or_else(|| "https://paper-bro.github.io".into()).trim_end_matches('/').to_string(),
+            },
             public_origin: var("PUBLIC_ORIGIN").unwrap_or_else(|| "https://aero.oops.wtf".into()),
             publish: parsed("PUBLISH", 0u8)? == 1,
             chrome,

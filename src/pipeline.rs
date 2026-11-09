@@ -24,6 +24,7 @@ use crate::app::App;
 use crate::arxiv::{self, Meta};
 use crate::course::{self, Course, Lesson, Outline, QuizItem, Review};
 use crate::db;
+use crate::github;
 use crate::ingest::{self, Paper, Unsupported};
 use crate::llm::{LlmError, Request, Usage};
 use crate::qa;
@@ -341,15 +342,15 @@ impl Job {
         db::put_artifact(&app.pool, &self.id, "html", &html).await?;
         let alias = arxiv::alias(&self.id);
         let (page_id, url) = if cfg.publish {
-            // The page we already have, addressed relative to AERO's origin
-            // as AERO addresses it.
-            let existing = app.course(&self.id).and_then(|c| {
-                let id = c.aero_page_id.filter(|p| p != "preview")?;
-                let url = c.aero_url?.strip_prefix(cfg.public_origin.as_str())?.to_string();
-                Some(crate::aero::Page { id, url })
-            });
-            let p = app.aero.publish(existing.as_ref(), &alias, &html).await?;
-            (p.id, format!("{}{}", cfg.public_origin, p.url))
+            let path = github::page_path(&alias);
+            github::commit(&cfg.github, &[(path.clone(), Some(html.as_str()))], &format!("Publish arXiv:{}", self.id)).await?;
+            // Pages deploys the commit in a minute or so. Wait, so the course
+            // isn't called ready, or announced, while its link is a 404.
+            let url = github::page_url(&cfg.github, &alias);
+            if !github::wait_until_live(&url, Duration::from_secs(5), 60).await {
+                self.note("GitHub Pages wasn't serving the page five minutes after the commit").await;
+            }
+            (path, url)
         } else {
             ("preview".to_string(), format!("{origin}/paper-bro/preview/{alias}"))
         };

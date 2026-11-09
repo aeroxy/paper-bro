@@ -78,7 +78,7 @@ impl PaperId {
     }
 }
 
-/// The AERO alias for a paper's course: `arxiv-1706-03762`.
+/// The name of a paper's course page: `arxiv-1706-03762`.
 pub fn alias(id: &str) -> String {
     format!("arxiv-{}", id.to_ascii_lowercase().replace(['/', '.'], "-"))
 }
@@ -297,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn aliases_fit_aero() {
+    fn aliases_are_safe_page_names() {
         let re = Regex::new(r"^[a-z0-9][a-z0-9-]{1,62}$").unwrap();
         for id in ["1706.03762", "hep-th/9711200", "math.GT/0309136"] {
             let a = alias(id);
