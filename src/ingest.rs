@@ -89,7 +89,7 @@ impl Walker {
                     return;
                 }
                 if name == "math" {
-                    let tex = e.attr("alttext").unwrap_or("").trim();
+                    let tex = COLOR_MODEL.replace_all(e.attr("alttext").unwrap_or("").trim(), "");
                     if e.attr("display") == Some("block") {
                         self.out.push_str(&format!("\n$$ {tex} $$\n"));
                     } else {
@@ -181,6 +181,11 @@ impl Walker {
 }
 
 static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[ \t\u{a0}]+").unwrap());
+/// LaTeXML hands over each formula as the paper's own LaTeX, and xcolor's
+/// colour with a model, `\color[rgb]{0,0.5,0.5}`, is beyond KaTeX, which then
+/// shows the whole formula as an error (2610.15267's figure captions did). The
+/// colour goes and the math stays; `\color{name}`, which KaTeX reads, is kept.
+static COLOR_MODEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\(?:text)?color\[[^\]]*\]\{[^}]*\}").unwrap());
 static BLANK_LINES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n\s*\n(\s*\n)+").unwrap());
 
 fn tidy(s: &str) -> String {
@@ -317,6 +322,19 @@ mod tests {
         assert!(p.text.contains("[F1] Figure 1: The Transformer."));
         assert!(!p.text.contains("footnote") && !p.text.contains("refs") && !p.text.contains("skip"));
         assert_eq!(p.figures[0].url, "https://arxiv.org/html/1706.03762v7/Figures/a.png");
+    }
+
+    #[test]
+    fn a_colour_katex_cannot_read_is_dropped_and_the_math_kept() {
+        let html = r#"<html><body><article class="ltx_document"><h1 class="ltx_title ltx_title_document">T</h1>
+          <figure class="ltx_figure"><img src="2610.15267v1/x1.png"><figcaption>Figure 1: The optimum
+          <math alttext="\omega^{\color[rgb]{0,0.5,0.5}*}" display="inline"></math> and
+          <math alttext="\textcolor[RGB]{0,128,128}{\theta}^{\color{teal}*}" display="inline"></math>.</figcaption></figure>
+          <p>padding </p></article></body></html>"#;
+        let html = html.replace("padding ", &"filler text ".repeat(200));
+        let p = from_latexml("https://arxiv.org/html/2610.15267v1", &html).unwrap();
+        assert!(p.figures[0].caption.contains(r"$\omega^{*}$"), "{}", p.figures[0].caption);
+        assert!(p.figures[0].caption.contains(r"${\theta}^{\color{teal}*}$"), "{}", p.figures[0].caption);
     }
 
     fn tarball(entries: &[(&str, &[u8])], symlink: Option<(&str, &str)>) -> Vec<u8> {
