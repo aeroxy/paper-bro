@@ -104,6 +104,7 @@ pub async fn set_source_kind(pool: &PgPool, id: &str, kind: &str) -> Result<()> 
     Ok(())
 }
 
+/// Record the license a build looked up when it published the course.
 pub async fn set_license(pool: &PgPool, id: &str, license: &str) -> Result<()> {
     sqlx::query("UPDATE papers SET license_url = $2 WHERE arxiv_id = $1")
         .bind(id)

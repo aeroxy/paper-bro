@@ -171,6 +171,9 @@ impl Job {
         ]
     }
 
+    /// The whole build, from reading the paper to publishing the course. A
+    /// rerun reads the paper, the outline and the lessons back from an
+    /// earlier attempt's checkpoints.
     async fn run(&self) -> Result<()> {
         let app = &self.app;
         let mut meta = db::get_paper(&app.pool, &self.id).await?.context("the paper row is missing")?;

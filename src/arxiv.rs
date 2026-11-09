@@ -122,6 +122,8 @@ pub enum Fetched {
 }
 
 impl Client {
+    /// No timeout on the client itself: each request brings its own (see
+    /// `get`).
     pub fn new() -> Result<Self> {
         let http = reqwest::Client::builder()
             .user_agent("paper-bro/0.1 (+https://aero.oops.wtf/paper-bro)")
