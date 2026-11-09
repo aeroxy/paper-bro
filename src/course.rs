@@ -478,6 +478,29 @@ fn figure(c: &Course, lesson: &Lesson) -> String {
 /// hosted the pages until November 2026, took about 1 MB.)
 pub const MAX_HTML: usize = 950_000;
 
+static EMOJI: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\p{Extended_Pictographic}").unwrap());
+
+/// A model can run off the rails partway through a field: 2605.00649's
+/// tagline went on for 3,134 characters and 426 emoji, and the page showed
+/// all of it as its headline. Browser QA tests the labs and the reviewer reads
+/// the lessons, so the plan's display fields get their own check: far longer
+/// than any real one, or more than a few emoji.
+pub fn plan_problems(o: &Outline) -> Vec<String> {
+    let fields = [("course title", &o.course_title, 120), ("tagline", &o.tagline, 300), ("summary", &o.lede, 900)];
+    let mut problems = Vec::new();
+    for (name, text, max) in fields {
+        let chars = text.chars().count();
+        if chars > max {
+            problems.push(format!("the {name} is {chars} characters, over {max}"));
+        }
+        let emoji = EMOJI.find_iter(text).count();
+        if emoji > 3 {
+            problems.push(format!("the {name} has {emoji} emoji"));
+        }
+    }
+    problems
+}
+
 /// Refuse an oversized page, with the same message wherever it is built.
 pub fn check_size(html: &str) -> anyhow::Result<()> {
     if html.len() > MAX_HTML {
@@ -665,6 +688,18 @@ mod tests {
         assert!(html.contains(r#"<a class="brand" href="https://example.test/paper-bro/">"#), "brand link missing");
         // The quiz footer's own "Back to top" is the link that scrolls up.
         assert!(html.contains(r##"<a class="next" href="#top">Back to top ↑</a>"##));
+    }
+
+    #[test]
+    fn a_plan_with_a_runaway_display_field_is_flagged() {
+        let (_, mut outline, _) = crate::sample::course();
+        assert!(plan_problems(&outline).is_empty(), "{:?}", plan_problems(&outline));
+        outline.tagline = format!("Geometry that keeps AI exactly on budget. {}", "🚀🤗💸".repeat(150));
+        let problems = plan_problems(&outline);
+        assert_eq!(problems, vec!["the tagline is 492 characters, over 300", "the tagline has 450 emoji"]);
+        outline.tagline = "Geometry that keeps AI exactly on budget — no tuning, no overshoot, no waste.".into();
+        outline.course_title = "x".repeat(121);
+        assert_eq!(plan_problems(&outline), vec!["the course title is 121 characters, over 120"]);
     }
 
     #[test]

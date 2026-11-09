@@ -214,7 +214,18 @@ impl Job {
             Some(o) => o,
             None => {
                 self.stage("outline", "Planning the course").await;
-                let o = self.outline(&paper_msg, &paper).await?;
+                let mut o = self.outline(&paper_msg, &paper).await?;
+                // A plan whose headline ran off the rails is written once more,
+                // and never saved (course::plan_problems).
+                let problems = course::plan_problems(&o);
+                if !problems.is_empty() {
+                    self.note(&format!("the plan was written again: {}", problems.join("; "))).await;
+                    o = self.outline(&paper_msg, &paper).await?;
+                    let problems = course::plan_problems(&o);
+                    if !problems.is_empty() {
+                        bail!("the plan came out broken twice: {}", problems.join("; "));
+                    }
+                }
                 self.save("outline", &o).await?;
                 o
             }
