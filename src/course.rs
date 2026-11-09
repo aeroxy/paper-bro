@@ -313,7 +313,36 @@ const LOGO: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" style="display:no
 
 const FONTS: &str = r#"<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/inter@5/index.min.css"><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/inter@5/700.min.css"><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/inter@5/800.min.css"><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/jetbrains-mono@5/index.min.css">"#;
 
+/// The app's icon (frontend/index.html), inline because the page's CSP lets
+/// images come only from `data:` and arXiv, and Chrome holds favicons to that.
+const ICON: &str = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230B0B0B'/%3E%3Cpath d='M10 8h9l4 4v12H10z' fill='none' stroke='%23fff' stroke-width='1.6' stroke-linejoin='round'/%3E%3Ccircle cx='22.5' cy='22.5' r='4.2' fill='%23D85A30'/%3E%3C/svg%3E";
+
+/// The course's lasting address: paper-bro's `/abs/<id>`, which redirects to
+/// wherever the page is hosted. It is the canonical URL, the one in link
+/// previews and in the sitemap (web.rs), so moving the pages again changes
+/// where it redirects and not what search engines index.
+pub fn course_url(origin: &str, id: &str) -> String {
+    format!("{origin}/paper-bro/abs/{id}")
+}
+
 fn head(c: &Course, origin: &str, title: &str) -> String {
+    let url = course_url(origin, &c.meta.id);
+    let ld = embed_json(&json!({
+        "@context": "https://schema.org",
+        "@type": "Course",
+        "name": c.outline.course_title,
+        "description": c.outline.lede,
+        "url": url,
+        "inLanguage": "en",
+        "isAccessibleForFree": true,
+        "provider": {"@type": "Organization", "name": "paper-bro", "url": format!("{origin}/paper-bro/")},
+        "about": {
+            "@type": "ScholarlyArticle",
+            "name": c.meta.title,
+            "url": arxiv::abs_url(&c.meta.id),
+            "author": c.meta.authors.iter().map(|a| json!({"@type": "Person", "name": a})).collect::<Vec<_>>(),
+        },
+    }));
     format!(
         r#"<!doctype html>
 <html lang="en">
@@ -324,6 +353,15 @@ fn head(c: &Course, origin: &str, title: &str) -> String {
 <title>{title}</title>
 <meta name="description" content="{desc}">
 <meta name="paper-bro" content="{id}">
+<link rel="icon" href="{ICON}">
+<link rel="canonical" href="{url}">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="paper-bro">
+<meta property="og:title" content="{title}">
+<meta property="og:description" content="{desc}">
+<meta property="og:url" content="{url}">
+<meta name="twitter:card" content="summary">
+<script type="application/ld+json">{ld}</script>
 {FONTS}
 <link rel="stylesheet" href="{KATEX}/katex.min.css">
 <script defer src="{KATEX}/katex.min.js"></script>
@@ -334,6 +372,7 @@ fn head(c: &Course, origin: &str, title: &str) -> String {
         csp = csp(origin),
         desc = esc(&c.outline.lede),
         id = esc(&c.meta.id),
+        url = esc(&url),
         css = include_str!("../shell/course.css"),
     )
 }
@@ -622,6 +661,22 @@ mod tests {
         assert!(html.contains(r#"<a class="brand" href="https://example.test/paper-bro/">"#), "brand link missing");
         // The quiz footer's own "Back to top" is the link that scrolls up.
         assert!(html.contains(r##"<a class="next" href="#top">Back to top ↑</a>"##));
+    }
+
+    #[test]
+    fn a_course_names_its_lasting_paper_bro_address_and_carries_the_icon() {
+        let (meta, outline, lessons) = crate::sample::course();
+        let c = Course { meta: &meta, outline: &outline, lessons: &lessons, figures: &[], model: "m", built: "today" };
+        let html = assemble(&c, "https://aero.example");
+        let url = "https://aero.example/paper-bro/abs/0000.00000";
+        assert!(html.contains(&format!(r#"<link rel="canonical" href="{url}">"#)), "no canonical");
+        assert!(html.contains(&format!(r#"<meta property="og:url" content="{url}">"#)), "no og:url");
+        assert!(html.contains(&format!(r#"<link rel="icon" href="{ICON}">"#)), "no icon");
+        let ld = html.split(r#"<script type="application/ld+json">"#).nth(1).unwrap().split("</script>").next().unwrap();
+        let ld: Value = serde_json::from_str(ld).unwrap();
+        assert_eq!(ld["@type"], "Course");
+        assert_eq!(ld["url"], url);
+        assert_eq!(ld["about"]["url"], "https://arxiv.org/abs/0000.00000");
     }
 
     #[test]
