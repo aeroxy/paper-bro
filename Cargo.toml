@@ -29,3 +29,9 @@ serde_json = "1.0.154"
 sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "json", "macros", "migrate"] }
 tar = "0.4.46"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "signal", "sync", "time", "process", "fs"] }
+
+# Build scripts and proc macros only; the binary is stripped as before. On
+# macOS 27.2 the loader rejects stripped sqlx-macros ("mis-aligned LINKEDIT
+# string pool"), and rustc then reports it as "can't find crate for `sqlx`".
+[profile.release.build-override]
+strip = false
