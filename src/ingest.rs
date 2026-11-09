@@ -78,6 +78,9 @@ const SKIP_CLASSES: &[&str] = &[
 ];
 
 impl Walker {
+    /// Appends `node` as the text the model reads: headings as markdown,
+    /// math as `$…$` LaTeX, figures as `[F1]` markers with their captions,
+    /// and nothing from navigation, references or footnotes.
     fn walk(&mut self, node: NodeRef<Node>) {
         match node.value() {
             Node::Text(t) => self.out.push_str(t),
@@ -89,7 +92,8 @@ impl Walker {
                     return;
                 }
                 if name == "math" {
-                    let tex = COLOR_MODEL.replace_all(e.attr("alttext").unwrap_or("").trim(), "");
+                    let tex = COLOR_MODEL.replace_all(e.attr("alttext").unwrap_or(""), " ");
+                    let tex = tex.trim();
                     if e.attr("display") == Some("block") {
                         self.out.push_str(&format!("\n$$ {tex} $$\n"));
                     } else {
@@ -185,6 +189,8 @@ static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[ \t\u{a0}]+").un
 /// colour with a model, `\color[rgb]{0,0.5,0.5}`, is beyond KaTeX, which then
 /// shows the whole formula as an error (2610.15267's figure captions did). The
 /// colour goes and the math stays; `\color{name}`, which KaTeX reads, is kept.
+/// It becomes a space, not nothing: math ignores spaces, and nothing would
+/// join `\sin\color[rgb]{1,0,0}h` into `\sinh`.
 static COLOR_MODEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\(?:text)?color\[[^\]]*\]\{[^}]*\}").unwrap());
 static BLANK_LINES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n\s*\n(\s*\n)+").unwrap());
 
@@ -324,6 +330,8 @@ mod tests {
         assert_eq!(p.figures[0].url, "https://arxiv.org/html/1706.03762v7/Figures/a.png");
     }
 
+    /// 2610.15267's captions: KaTeX can't read xcolor's `\color[rgb]{…}`, and
+    /// removing it must not join two control words into another one.
     #[test]
     fn a_colour_katex_cannot_read_is_dropped_and_the_math_kept() {
         let html = r#"<html><body><article class="ltx_document"><h1 class="ltx_title ltx_title_document">T</h1>
@@ -333,8 +341,12 @@ mod tests {
           <p>padding </p></article></body></html>"#;
         let html = html.replace("padding ", &"filler text ".repeat(200));
         let p = from_latexml("https://arxiv.org/html/2610.15267v1", &html).unwrap();
-        assert!(p.figures[0].caption.contains(r"$\omega^{*}$"), "{}", p.figures[0].caption);
+        assert!(p.figures[0].caption.contains(r"$\omega^{ *}$"), "{}", p.figures[0].caption);
         assert!(p.figures[0].caption.contains(r"${\theta}^{\color{teal}*}$"), "{}", p.figures[0].caption);
+        assert!(!p.figures[0].caption.contains("color["), "{}", p.figures[0].caption);
+        let joined = html.replace(r"\omega^{\color[rgb]{0,0.5,0.5}*}", r"\sin\color[rgb]{1,0,0}h(x)");
+        let p = from_latexml("https://arxiv.org/html/2610.15267v1", &joined).unwrap();
+        assert!(p.figures[0].caption.contains(r"$\sin h(x)$"), "\\sin and h stay apart: {}", p.figures[0].caption);
     }
 
     fn tarball(entries: &[(&str, &[u8])], symlink: Option<(&str, &str)>) -> Vec<u8> {
