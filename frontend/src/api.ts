@@ -15,6 +15,8 @@ export interface Paper {
   url: string | null
   error: string | null
   retryable: boolean
+  /** When a failed build may be tried again; set while that is still ahead. */
+  retry_at: string | null
   queue_position: number | null
 }
 

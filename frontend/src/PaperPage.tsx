@@ -40,6 +40,15 @@ export function PaperPage() {
 
   useEffect(load, [load])
 
+  // A failed build can be tried again an hour after it stopped (src/web.rs).
+  // Ask again then, so the button appears without a reload.
+  const retryAt = paper && !paper.retryable ? paper.retry_at : null
+  useEffect(() => {
+    if (!retryAt) return
+    const t = setTimeout(load, Math.max(new Date(retryAt).getTime() - Date.now() + 1000, 0))
+    return () => clearTimeout(t)
+  }, [retryAt, load])
+
   if (!id) return <Notice title="That isn't an arXiv paper id." body={`“${raw}” doesn't look like one. Try 1706.03762 or an arxiv.org link.`} />
   if (error) return <Notice title="Something's not right." body={error} />
   if (!paper) return <p className="pt-16 text-[14px] text-fg-3">Looking up arXiv:{id}…</p>
@@ -80,11 +89,16 @@ export function PaperPage() {
           <div className="card">
             <div className="eyebrow text-danger-strong">Couldn't build this one</div>
             <p className="mt-3 text-[14.5px] text-fg-2">{paper.error}</p>
-            {paper.retryable && (
+            {paper.retryable ? (
               <button className="btn-sec mt-5" onClick={start} disabled={busy}>
                 Try again
               </button>
-            )}
+            ) : paper.retry_at ? (
+              <p className="mt-3 text-[13px] text-fg-3">
+                You can try again after{' '}
+                {new Date(paper.retry_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.
+              </p>
+            ) : null}
           </div>
         ) : paper.status === 'removed' ? (
           <div className="card">
