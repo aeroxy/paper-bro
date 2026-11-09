@@ -96,6 +96,8 @@ pub struct Meta {
     #[serde(rename = "abstract")]
     pub abstract_: String,
     pub categories: Vec<String>,
+    /// From `Client::license`. `Client::meta` leaves it `None`; a build
+    /// fills it in.
     pub license: Option<String>,
     pub published: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -106,6 +108,12 @@ pub struct Client {
 }
 
 const GAP: Duration = Duration::from_secs(3);
+/// Long enough for a big source tarball.
+const TIMEOUT: Duration = Duration::from_secs(90);
+/// The lock is held for a whole request, so a hung one stalls every other
+/// arXiv call. The license is optional and OAI-PMH has been seen to hang,
+/// so its lookup gives up much sooner.
+const LICENSE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What came back from a paced GET.
 pub enum Fetched {
@@ -117,21 +125,20 @@ impl Client {
     pub fn new() -> Result<Self> {
         let http = reqwest::Client::builder()
             .user_agent("paper-bro/0.1 (+https://aero.oops.wtf/paper-bro)")
-            .timeout(Duration::from_secs(90))
             .build()?;
         Ok(Self { http, last: Mutex::new(None) })
     }
 
     /// GET with arXiv's pacing. The lock is held across the request, which
     /// is what makes it one connection at a time.
-    async fn get(&self, url: &str) -> Result<Fetched> {
+    async fn get(&self, url: &str, timeout: Duration) -> Result<Fetched> {
         let mut last = self.last.lock().await;
         if let Some(t) = *last {
             let wait = GAP.saturating_sub(t.elapsed());
             tokio::time::sleep(wait).await;
         }
         let result = async {
-            let resp = self.http.get(url).send().await.with_context(|| format!("GET {url}"))?;
+            let resp = self.http.get(url).timeout(timeout).send().await.with_context(|| format!("GET {url}"))?;
             if resp.status() == reqwest::StatusCode::NOT_FOUND {
                 return Ok(Fetched::NotFound);
             }
@@ -144,25 +151,29 @@ impl Client {
         result
     }
 
-    /// Metadata from the export API, plus the license from OAI-PMH. `None`
-    /// when arXiv has no such paper.
+    /// Metadata from the export API, without the license: that comes from a
+    /// second service, which a visitor shouldn't wait on (see `license`).
+    /// `None` when arXiv has no such paper.
     pub async fn meta(&self, id: &str) -> Result<Option<Meta>> {
         let url = format!("https://export.arxiv.org/api/query?id_list={id}&max_results=1");
-        let Fetched::Ok { body, .. } = self.get(&url).await? else { return Ok(None) };
-        let Some(mut meta) = parse_atom(&String::from_utf8_lossy(&body), id)? else { return Ok(None) };
-        let oai = format!(
+        let Fetched::Ok { body, .. } = self.get(&url, TIMEOUT).await? else { return Ok(None) };
+        parse_atom(&String::from_utf8_lossy(&body), id)
+    }
+
+    /// The paper's license URL, from OAI-PMH. `None` when the record has
+    /// none.
+    pub async fn license(&self, id: &str) -> Result<Option<String>> {
+        let url = format!(
             "https://oaipmh.arxiv.org/oai?verb=GetRecord&identifier=oai:arXiv.org:{id}&metadataPrefix=arXiv"
         );
-        if let Fetched::Ok { body, .. } = self.get(&oai).await? {
-            meta.license = parse_license(&String::from_utf8_lossy(&body));
-        }
-        Ok(Some(meta))
+        let Fetched::Ok { body, .. } = self.get(&url, LICENSE_TIMEOUT).await? else { return Ok(None) };
+        Ok(parse_license(&String::from_utf8_lossy(&body)))
     }
 
     /// The LaTeXML rendering, with the URL it was served from (figure paths
     /// resolve against it). `None` when the paper has no HTML version.
     pub async fn html(&self, id: &str, version: u32) -> Result<Option<(String, String)>> {
-        match self.get(&format!("https://arxiv.org/html/{id}v{version}")).await? {
+        match self.get(&format!("https://arxiv.org/html/{id}v{version}"), TIMEOUT).await? {
             Fetched::NotFound => Ok(None),
             Fetched::Ok { url, body } => {
                 let text = String::from_utf8_lossy(&body).into_owned();
@@ -175,7 +186,7 @@ impl Client {
 
     /// The source tarball (or a single gzipped .tex, or a PDF).
     pub async fn eprint(&self, id: &str, version: u32) -> Result<Option<Vec<u8>>> {
-        match self.get(&format!("https://arxiv.org/e-print/{id}v{version}")).await? {
+        match self.get(&format!("https://arxiv.org/e-print/{id}v{version}"), TIMEOUT).await? {
             Fetched::NotFound => Ok(None),
             Fetched::Ok { body, .. } => Ok(Some(body)),
         }
@@ -307,5 +318,37 @@ mod tests {
         assert_eq!(m.authors, vec!["Ashish Vaswani", "Noam Shazeer"]);
         assert_eq!(m.categories, vec!["cs.CL", "cs.LG"]);
         assert!(m.published.is_some());
+    }
+
+    #[test]
+    fn license_parsing() {
+        // Trimmed from a real GetRecord response.
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+          <OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/"><GetRecord><record><metadata>
+          <arXiv xmlns="http://arxiv.org/OAI/arXiv/"><id>1706.03762</id><title>Attention Is All You Need</title>
+          <license>http://arxiv.org/licenses/nonexclusive-distrib/1.0/</license></arXiv>
+          </metadata></record></GetRecord></OAI-PMH>"#;
+        assert_eq!(parse_license(xml).as_deref(), Some("http://arxiv.org/licenses/nonexclusive-distrib/1.0/"));
+        let unknown = r#"<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/"><error code="idDoesNotExist">No record</error></OAI-PMH>"#;
+        assert_eq!(parse_license(unknown), None);
+    }
+
+    /// A service that takes the connection and never answers (OAI-PMH did)
+    /// holds the arXiv lock until the request's own timeout, and no longer.
+    #[tokio::test]
+    async fn a_request_that_never_gets_an_answer_gives_up_at_its_timeout() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let mut open = Vec::new();
+            while let Ok((conn, _)) = listener.accept().await {
+                open.push(conn);
+            }
+        });
+        let client = Client::new().unwrap();
+        let started = Instant::now();
+        let r = tokio::time::timeout(Duration::from_secs(5), client.get(&url, Duration::from_millis(300))).await;
+        assert!(matches!(r, Ok(Err(_))), "it should fail on its own, at its timeout");
+        assert!(started.elapsed() < Duration::from_secs(2), "took {:?}", started.elapsed());
     }
 }

@@ -38,6 +38,8 @@ pub async fn connect(url: &str) -> Result<PgPool> {
     Ok(pool)
 }
 
+/// Metadata fresh from arXiv has no license (see `Meta::license`), so a
+/// missing one keeps the license already stored.
 pub async fn upsert_paper(pool: &PgPool, m: &Meta) -> Result<()> {
     sqlx::query(
         "INSERT INTO papers (arxiv_id, version, title, authors, abstract, categories, license_url, published_at)
@@ -45,7 +47,7 @@ pub async fn upsert_paper(pool: &PgPool, m: &Meta) -> Result<()> {
          ON CONFLICT (arxiv_id) DO UPDATE SET
            version = EXCLUDED.version, title = EXCLUDED.title, authors = EXCLUDED.authors,
            abstract = EXCLUDED.abstract, categories = EXCLUDED.categories,
-           license_url = EXCLUDED.license_url, published_at = EXCLUDED.published_at,
+           license_url = COALESCE(EXCLUDED.license_url, papers.license_url), published_at = EXCLUDED.published_at,
            fetched_at = now()",
     )
     .bind(&m.id)
@@ -97,6 +99,15 @@ pub async fn set_source_kind(pool: &PgPool, id: &str, kind: &str) -> Result<()> 
     sqlx::query("UPDATE papers SET source_kind = $2 WHERE arxiv_id = $1")
         .bind(id)
         .bind(kind)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn set_license(pool: &PgPool, id: &str, license: &str) -> Result<()> {
+    sqlx::query("UPDATE papers SET license_url = $2 WHERE arxiv_id = $1")
+        .bind(id)
+        .bind(license)
         .execute(pool)
         .await?;
     Ok(())

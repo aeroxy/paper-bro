@@ -173,7 +173,7 @@ impl Job {
 
     async fn run(&self) -> Result<()> {
         let app = &self.app;
-        let meta = db::get_paper(&app.pool, &self.id).await?.context("the paper row is missing")?;
+        let mut meta = db::get_paper(&app.pool, &self.id).await?.context("the paper row is missing")?;
         if let Some(prev) = db::course(&app.pool, &self.id).await? {
             if let Ok(Some(u)) = sqlx::query_scalar::<_, Value>("SELECT usage FROM courses WHERE arxiv_id = $1")
                 .bind(&prev.arxiv_id)
@@ -307,6 +307,20 @@ impl Job {
 
         // 7. Publish.
         self.stage("publish", "Publishing the course").await;
+        // The license is only for the page's footer, so it is looked up here
+        // rather than while a visitor waits, and a failed lookup keeps the
+        // one we have (if any) instead of failing a finished course.
+        match app.arxiv.license(&meta.id).await {
+            Ok(Some(license)) => {
+                db::set_license(&app.pool, &self.id, &license).await?;
+                meta.license = Some(license);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                let kept = meta.license.as_deref().unwrap_or("none");
+                self.note(&format!("the license lookup failed (stored license: {kept}): {e:#}")).await;
+            }
+        }
         let cfg = &app.cfg;
         let origin = if cfg.publish { cfg.public_origin.clone() } else { format!("http://{}", cfg.listen) };
         let model = app.llm.model();
