@@ -1,12 +1,12 @@
 //! paper-bro: paste an arXiv paper, get an interactive course on AERO.
 //! See README.md for what runs where.
 
-mod aero;
 mod app;
 mod arxiv;
 mod config;
 mod course;
 mod db;
+mod github;
 mod ingest;
 mod llm;
 mod pipeline;
@@ -99,6 +99,12 @@ async fn serve() -> Result<()> {
         log::info!("removed {stale} browser profile(s) a previous run left behind");
     }
     if publish {
+        // AERO's token lapsed with nothing checking it, and every build failed
+        // at publish for nine days. Say at startup whether publishing works.
+        match github::check(&app.cfg.github).await {
+            Ok(()) => log::info!("publishing to {} as the GitHub App", app.cfg.github.repo),
+            Err(e) => log::error!("publishing will fail: {e:#}"),
+        }
         let n = db::requeue_previews(&app.pool).await?;
         if n > 0 {
             log::info!("queued {n} dry-run course(s) to be published");
@@ -245,10 +251,14 @@ async fn republish(id: &str) -> Result<()> {
         bail!("browser QA found problems; nothing was published");
     }
     if app.cfg.publish {
-        let page = row.aero_page_id.filter(|p| p != "preview").context("the course has no AERO page to update")?;
-        app.aero.update_page(&page, &html).await?;
+        if row.aero_url.is_none() || row.aero_page_id.as_deref() == Some("preview") {
+            bail!("{id} has no published page to update");
+        }
+        let alias = arxiv::alias(id);
+        github::commit(&app.cfg.github, &[(github::page_path(&alias), Some(html.as_str()))], &format!("Republish arXiv:{id}")).await?;
         db::put_artifact(pool, id, "html", &html).await?;
-        println!("republished {id}: {} ({} KB), QA clean on {} labs", row.aero_url.as_deref().unwrap_or(&page), html.len() / 1024, labs.len());
+        let url = github::page_url(&app.cfg.github, &alias);
+        println!("republished {id}: {url} ({} KB), QA clean on {} labs", html.len() / 1024, labs.len());
     } else {
         std::fs::create_dir_all("tmp")?;
         let out = format!("tmp/{}.html", arxiv::alias(id));
@@ -314,7 +324,7 @@ async fn announce(id: Option<&str>, again: bool) -> Result<()> {
         }
         let (meta, row, outline, lessons) = stored(&app.pool, id).await?;
         if row.aero_url.is_none() || row.aero_page_id.as_deref() == Some("preview") {
-            bail!("{id} isn't published to AERO");
+            bail!("{id} isn't published");
         }
         let text = telegram::message(&meta, &outline, &lessons, &telegram::link(&app.cfg.public_origin, id));
         if !app.cfg.publish {

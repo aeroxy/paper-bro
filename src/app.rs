@@ -11,7 +11,6 @@ use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{Notify, broadcast};
 
-use crate::aero::Aero;
 use crate::arxiv::{self, Meta};
 use crate::config::Config;
 use crate::db::{self, CourseRow, Event};
@@ -22,7 +21,6 @@ pub struct App {
     pub pool: PgPool,
     pub llm: Llm,
     pub arxiv: arxiv::Client,
-    pub aero: Aero,
     pub courses: RwLock<HashMap<String, CourseRow>>,
     channels: Mutex<HashMap<String, broadcast::Sender<Event>>>,
     pub wake: Notify,
@@ -41,7 +39,6 @@ impl App {
         Ok(Self {
             llm: Llm::new(&cfg.endpoint, 8)?,
             arxiv: arxiv::Client::new()?,
-            aero: Aero::new(&cfg.aero_mcp_url, &cfg.aero_token)?,
             cfg,
             pool,
             courses: RwLock::new(courses),

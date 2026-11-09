@@ -1,8 +1,10 @@
 # paper-bro
 
 Paste an arXiv paper and get an interactive course, published on
-[AERO](https://aero.oops.wtf). No login. One paper gets one course: whoever
-asks first starts the build, and everyone after that is sent straight to it.
+[GitHub Pages](https://github.com/paper-bro/paper-bro.github.io) at
+`https://paper-bro.github.io/arxiv-<id>`. No login. One paper gets one course:
+whoever asks first starts the build, and everyone after that is sent straight
+to it.
 
 Live at `https://aero.oops.wtf/paper-bro`. On any paper, swap `arxiv.org`
 for `aero.oops.wtf/paper-bro` in the address.
@@ -19,7 +21,7 @@ Why each part is built the way it is lives in its module's doc comment
 | Front end | React 19 + Vite + Tailwind 3, built with bun, embedded with rust-embed |
 | Model | Any OpenAI-compatible server (built against Muse Spark Open), through `src/llm.rs`, no agent framework |
 | Browser QA | `chrome-headless-shell` (Chrome for Testing, pinned), driven over CDP with chromiumoxide |
-| Publishing | AERO's `/mcp` endpoint with a personal access token; courses live at `/p/arxiv-<id>` |
+| Publishing | The aero-oops-wtf GitHub App commits each course to `paper-bro/paper-bro.github.io` as `arxiv-<id>.html`; GitHub Pages serves it at `/arxiv-<id>` |
 | Announcements | Each published course is posted once to the [paper-bro Telegram channel](https://t.me/arxiv_courses) by a bot, when `TELEGRAM_*` is set |
 | Deploy | One binary and a headless Chromium behind a reverse proxy at `/paper-bro` |
 
@@ -46,7 +48,7 @@ network from inside its iframe.
 ## Local development
 
 ```sh
-cp .env.example .env          # fill in NEON_DB, AERO_TOKEN, LLM_*
+cp .env.example .env          # fill in NEON_DB, LLM_*, and GH_APP_KEY_PATH to publish
 mkdir -p .chrome && cd .chrome && \
   curl -sSLO https://storage.googleapis.com/chrome-for-testing-public/156.0.8078.47/mac-arm64/chrome-headless-shell-mac-arm64.zip && \
   unzip -q chrome-headless-shell-mac-arm64.zip && rm chrome-headless-shell-mac-arm64.zip && cd ..
@@ -55,7 +57,7 @@ cargo run -- serve            # http://127.0.0.1:8083/paper-bro/
 ```
 
 `PUBLISH=0`, the default, keeps finished courses in the database and serves
-them at `/paper-bro/preview/<alias>` instead of publishing to AERO. A dry-run
+them at `/paper-bro/preview/<alias>` instead of publishing them. A dry-run
 server starts no build workers unless `WORKERS` is set, so the Build button
 only queues; `cargo run -- build <id>` builds one course in the foreground.
 
@@ -98,9 +100,9 @@ paper-bro is one binary plus a headless Chromium, and runs on any Linux host:
 
    `ldd` on the binary lists anything still missing.
 3. **Configure.** Set the environment; `.env.example` lists every variable.
-   In production that means `PUBLISH=1` and your `PUBLIC_ORIGIN`. If
-   paper-bro runs on the same host as AERO, point `AERO_MCP_URL` at AERO's
-   local port to skip the round trip through the proxy. The model API is
+   In production that means `PUBLISH=1`, your `PUBLIC_ORIGIN`, and the GitHub
+   App's private key where `GH_APP_KEY_PATH` points (readable by paper-bro
+   only). The App needs `contents: write` on `GH_REPO`. The model API is
    whatever OpenAI-compatible server `LLM_BASE_URL` (up to `/v1`), `LLM_MODEL`
    and, if it wants one, `LLM_API_KEY` point at. It must stream usage and
    support strict `json_schema` output. Costs are counted at Muse Spark Open's
@@ -133,16 +135,19 @@ an AppArmor profile. Never run it with `--no-sandbox`.
 - **Ports:** `LISTEN` (8083) is the public listener, which the proxy routes
   to. `ADMIN_LISTEN` (8085) is the admin listener; it only takes local
   connections and has no auth.
-- **The AERO token** expires after at most 90 days. When it does, publishing
-  fails with a message naming `/connect`. Mint a new token there, update
-  the environment, and restart.
+- **Publishing:** each course is one commit to `GH_REPO`, and GitHub Pages
+  deploys it within a minute or so; a build waits for the page to answer
+  before it calls the course ready. The App can't change Pages settings, so
+  Pages is switched on once by hand: Settings → Pages → Deploy from a branch
+  → `main`, `/ (root)`. At startup a publishing server logs whether it can
+  get a token for the repo; "publishing will fail" means every build would.
 - **Spend:** set a budget on your model provider's account too.
   `DAILY_BUDGET_USD` is paper-bro's own guard.
 - **Updating a published course:** `paper-bro republish <arxiv id>` rebuilds a
   finished course's page from its stored lessons with the current page code,
   runs browser QA on it, and updates the page in place. It makes no model
   calls and needs no `LLM_*` settings. It refuses if QA finds a problem, if a
-  figure differs from the one published, or if the page is over AERO's size
+  figure differs from the one published, or if the page is over the size
   limit. Without `PUBLISH=1` it only writes the page to `tmp/`.
 - **Telegram:** with `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` set, a
   publishing server posts each new course to the channel once; a rebuild or

@@ -262,7 +262,11 @@ pub struct CourseRow {
     pub arxiv_id: String,
     pub status: String,
     pub stage: Option<String>,
+    /// The published page's file in the site repo (`arxiv-….html`), or
+    /// `preview` after a dry run. The column is named for AERO, which hosted
+    /// the pages until November 2026.
     pub aero_page_id: Option<String>,
+    /// The published page's address, on GitHub Pages.
     pub aero_url: Option<String>,
     pub error: Option<String>,
     pub title: String,

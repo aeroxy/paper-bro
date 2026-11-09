@@ -28,7 +28,7 @@ export function Shell({ children }: { children: ReactNode }) {
       <main className="relative z-10 mx-auto max-w-[1100px] px-4 pb-20 sm:px-6">{children}</main>
       <footer className="relative z-10 pb-12 text-center text-[13px] text-fg-3">
         Courses are written by an AI model from the paper and hosted on{' '}
-        <a className="text-fg-2 underline-offset-2 hover:underline" href="/">AERO</a>. Papers come from{' '}
+        <a className="text-fg-2 underline-offset-2 hover:underline" href="https://github.com/paper-bro/paper-bro.github.io">GitHub Pages</a>. Papers come from{' '}
         <a className="text-fg-2 underline-offset-2 hover:underline" href="https://arxiv.org">arXiv</a>; paper-bro isn't affiliated with it.
       </footer>
     </>

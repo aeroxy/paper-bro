@@ -27,6 +27,7 @@ use crate::app::App;
 use crate::arxiv::{self, PaperId};
 use crate::config::BASE;
 use crate::db;
+use crate::github;
 
 #[derive(RustEmbed)]
 #[folder = "frontend/dist"]
@@ -509,8 +510,9 @@ async fn admin_rebuild(State(app): AppState, Path(raw): Path<String>) -> Respons
 async fn admin_remove(State(app): AppState, Path(raw): Path<String>) -> Response {
     let Some(id) = PaperId::parse(&raw) else { return StatusCode::BAD_REQUEST.into_response() };
     let Some(c) = app.course(&id.id) else { return (StatusCode::NOT_FOUND, "no such course\n").into_response() };
-    if let Some(page) = c.aero_page_id.filter(|p| p != "preview") {
-        if let Err(e) = app.aero.delete_page(&page).await {
+    if c.aero_page_id.is_some_and(|p| p != "preview") {
+        let page = github::page_path(&arxiv::alias(&id.id));
+        if let Err(e) = github::commit(&app.cfg.github, &[(page, None)], &format!("Remove arXiv:{}", id.id)).await {
             return internal(e);
         }
     }
