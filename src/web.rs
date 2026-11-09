@@ -128,7 +128,8 @@ async fn status_json(app: &App, id: &str) -> Result<Value, Response> {
         }
         _ => None,
     };
-    let retryable = course.as_ref().is_some_and(|c| c.status == "failed" && c.error.as_deref() == Some(GENERIC_FAILURE));
+    let retry_at = course.as_ref().and_then(retry_opens);
+    let retryable = retry_at.is_some_and(|t| chrono::Utc::now() >= t);
     Ok(json!({
         "id": meta.id,
         "alias": arxiv::alias(&meta.id),
@@ -144,6 +145,7 @@ async fn status_json(app: &App, id: &str) -> Result<Value, Response> {
         "url": course.as_ref().and_then(|c| c.aero_url.clone()),
         "error": course.as_ref().and_then(|c| c.error.clone()),
         "retryable": retryable,
+        "retry_at": retry_at,
         "queue_position": position,
     }))
 }
@@ -157,6 +159,18 @@ async fn paper(State(app): AppState, Query(q): Query<IdQuery>) -> Response {
         Ok(v) => Json(v).into_response(),
         Err(r) => r,
     }
+}
+
+/// When a course that failed for no reason of its own may be built again: an
+/// hour after its last attempt, so a build that keeps breaking isn't paid for
+/// over and over. The paper API and the build endpoint both go by this, so
+/// the page never offers a retry the server would ignore. `None` when the
+/// course can't be retried at all.
+fn retry_opens(c: &db::CourseRow) -> Option<chrono::DateTime<chrono::Utc>> {
+    if c.status != "failed" || c.error.as_deref() != Some(GENERIC_FAILURE) {
+        return None;
+    }
+    c.finished_at.map(|t| t + chrono::Duration::hours(1))
 }
 
 #[derive(Deserialize)]
@@ -177,9 +191,7 @@ async fn build(
         Err(r) => return r,
     };
     if let Some(c) = app.course(&id) {
-        let retry_failed = c.status == "failed"
-            && c.error.as_deref() == Some(GENERIC_FAILURE)
-            && c.finished_at.is_some_and(|t| chrono::Utc::now() - t > chrono::Duration::hours(1));
+        let retry_failed = retry_opens(&c).is_some_and(|t| chrono::Utc::now() >= t);
         if !retry_failed {
             return match status_json(&app, &id).await {
                 Ok(v) => Json(v).into_response(),
@@ -527,6 +539,28 @@ async fn admin_remove(State(app): AppState, Path(raw): Path<String>) -> Response
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_course_can_be_retried_an_hour_after_it_stopped() {
+        let stopped = chrono::Utc::now() - chrono::Duration::minutes(55);
+        let mut c = db::CourseRow {
+            arxiv_id: "2610.39302".into(),
+            status: "failed".into(),
+            stage: Some("publish".into()),
+            aero_page_id: None,
+            aero_url: None,
+            error: Some(GENERIC_FAILURE.into()),
+            title: String::new(),
+            requested_at: stopped,
+            finished_at: Some(stopped),
+        };
+        assert_eq!(retry_opens(&c), Some(stopped + chrono::Duration::hours(1)));
+        c.error = Some("arXiv has no readable version of this paper".into());
+        assert_eq!(retry_opens(&c), None, "a paper that can't be built isn't offered again");
+        c.error = Some(GENERIC_FAILURE.into());
+        c.status = "ready".into();
+        assert_eq!(retry_opens(&c), None);
+    }
 
     #[test]
     fn the_built_in_measurement_id_is_well_formed_and_used_twice() {
