@@ -9,6 +9,7 @@
 
 use anyhow::{Context, Result, bail};
 use regex::Regex;
+use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
@@ -111,8 +112,7 @@ const GAP: Duration = Duration::from_secs(3);
 /// Long enough for a big source tarball.
 const TIMEOUT: Duration = Duration::from_secs(90);
 /// The lock is held for a whole request, so a hung one stalls every other
-/// arXiv call. The license is optional and OAI-PMH has been seen to hang,
-/// so its lookup gives up much sooner.
+/// arXiv call. The license is optional, so its lookup gives up much sooner.
 const LICENSE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What came back from a paced GET.
@@ -151,8 +151,8 @@ impl Client {
         result
     }
 
-    /// Metadata from the export API, without the license: that comes from a
-    /// second service, which a visitor shouldn't wait on (see `license`).
+    /// Metadata from the export API, without the license, which takes a
+    /// second request that a visitor shouldn't wait for (see `license`).
     /// `None` when arXiv has no such paper.
     pub async fn meta(&self, id: &str) -> Result<Option<Meta>> {
         let url = format!("https://export.arxiv.org/api/query?id_list={id}&max_results=1");
@@ -160,12 +160,11 @@ impl Client {
         parse_atom(&String::from_utf8_lossy(&body), id)
     }
 
-    /// The paper's license URL, from OAI-PMH. `None` when the record has
-    /// none.
+    /// The paper's license URL, read off its abstract page. OAI-PMH has the
+    /// same data but has been seen to hang. `None` when the page names no
+    /// license.
     pub async fn license(&self, id: &str) -> Result<Option<String>> {
-        let url = format!(
-            "https://oaipmh.arxiv.org/oai?verb=GetRecord&identifier=oai:arXiv.org:{id}&metadataPrefix=arXiv"
-        );
+        let url = format!("https://export.arxiv.org/abs/{id}");
         let Fetched::Ok { body, .. } = self.get(&url, LICENSE_TIMEOUT).await? else { return Ok(None) };
         Ok(parse_license(&String::from_utf8_lossy(&body)))
     }
@@ -242,9 +241,11 @@ fn parse_atom(xml: &str, id: &str) -> Result<Option<Meta>> {
     }))
 }
 
-fn parse_license(xml: &str) -> Option<String> {
-    let doc = roxmltree::Document::parse(xml).ok()?;
-    doc.descendants().find(|n| n.has_tag_name("license")).and_then(|n| n.text()).map(squash)
+/// The license link on an abstract page: `<div class="abs-license"><a href=…>`.
+fn parse_license(html: &str) -> Option<String> {
+    let doc = Html::parse_document(html);
+    let link = Selector::parse("div.abs-license a[href]").unwrap();
+    doc.select(&link).next()?.value().attr("href").map(|h| h.trim().to_string())
 }
 
 #[cfg(test)]
@@ -322,15 +323,16 @@ mod tests {
 
     #[test]
     fn license_parsing() {
-        // Trimmed from a real GetRecord response.
-        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
-          <OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/"><GetRecord><record><metadata>
-          <arXiv xmlns="http://arxiv.org/OAI/arXiv/"><id>1706.03762</id><title>Attention Is All You Need</title>
-          <license>http://arxiv.org/licenses/nonexclusive-distrib/1.0/</license></arXiv>
-          </metadata></record></GetRecord></OAI-PMH>"#;
-        assert_eq!(parse_license(xml).as_deref(), Some("http://arxiv.org/licenses/nonexclusive-distrib/1.0/"));
-        let unknown = r#"<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/"><error code="idDoesNotExist">No record</error></OAI-PMH>"#;
-        assert_eq!(parse_license(unknown), None);
+        // Trimmed from real abstract pages. The PDF link comes first.
+        let cc = r#"<ul><li><a href="/pdf/2610.39302">View PDF</a></li></ul>
+          <div class="abs-license"><a href="http://creativecommons.org/licenses/by/4.0/" title="Rights to this article" class="has_license">
+            <img alt="license icon" role="presentation" src="https://arxiv.org/icons/licenses/by-4.0.png"/>
+            <span>view license</span>
+          </a></div>"#;
+        assert_eq!(parse_license(cc).as_deref(), Some("http://creativecommons.org/licenses/by/4.0/"));
+        let default = r#"<div class="abs-license"><a href="http://arxiv.org/licenses/nonexclusive-distrib/1.0/" title="Rights to this article">view license</a></div>"#;
+        assert_eq!(parse_license(default).as_deref(), Some("http://arxiv.org/licenses/nonexclusive-distrib/1.0/"));
+        assert_eq!(parse_license(r#"<ul><li><a href="/pdf/2610.39302">View PDF</a></li></ul>"#), None);
     }
 
     /// A service that takes the connection and never answers (OAI-PMH did)
