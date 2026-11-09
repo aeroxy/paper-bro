@@ -199,6 +199,10 @@ async fn republish(id: &str) -> Result<()> {
     let app = app::App::new(cfg).await?;
     let pool = &app.pool;
     let (meta, row, outline, lessons) = stored(pool, id).await?;
+    let problems = course::plan_problems(&outline);
+    if !problems.is_empty() {
+        bail!("the stored plan is broken ({}); fix its outline first, nothing was published", problems.join("; "));
+    }
     // Figures come from the paper's HTML rendering, which arXiv serves again.
     let figures = match app.arxiv.html(id, meta.version).await? {
         Some((url, html)) => ingest::from_latexml(&url, &html)?.figures,
