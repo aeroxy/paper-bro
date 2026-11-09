@@ -434,8 +434,9 @@ async fn static_file(uri: Uri) -> Response {
 }
 
 /// The Google Analytics property AERO uses, built in so that the app's own pages
-/// count toward the same totals as the courses AERO serves.
-const GA_ID: &str = "G-91SNPT9G03";
+/// and the course pages count toward the same totals. AERO added the tag to
+/// the courses it served; on GitHub Pages they carry it themselves (course.rs).
+pub const GA_ID: &str = "G-91SNPT9G03";
 
 /// GitHub Pages' copy of the front end's built files, published from `main` by
 /// .github/workflows/pages.yml, so that visitors fetch them from GitHub's CDN.
@@ -453,13 +454,18 @@ fn index() -> Response {
 /// The stock gtag.js bootstrap, the same one AERO's pages carry, right after
 /// `<head>`. GA's history tracking counts the app's client-side page changes.
 fn with_analytics(html: &str, id: &str) -> String {
-    let tag = format!(
-        r#"<script async src="https://www.googletagmanager.com/gtag/js?id={id}"></script><script>window.dataLayer=window.dataLayer||[];function gtag(){{dataLayer.push(arguments)}}gtag("js",new Date());gtag("config","{id}");</script>"#
-    );
+    let tag = analytics_tag(id);
     let at = html.find("<head>").map_or(0, |i| i + "<head>".len());
     let mut out = html.to_string();
     out.insert_str(at, &tag);
     out
+}
+
+/// The stock gtag.js bootstrap for property `id`.
+pub fn analytics_tag(id: &str) -> String {
+    format!(
+        r#"<script async src="https://www.googletagmanager.com/gtag/js?id={id}"></script><script>window.dataLayer=window.dataLayer||[];function gtag(){{dataLayer.push(arguments)}}gtag("js",new Date());gtag("config","{id}");</script>"#
+    )
 }
 
 /// The page's script and stylesheet tags, as Vite writes them.
