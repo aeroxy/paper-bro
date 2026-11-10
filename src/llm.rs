@@ -11,6 +11,10 @@
 //!   minutes, and a stream is how truncation shows: one that ends without a
 //!   `finish_reason` failed partway and is retried, never taken as a short
 //!   answer. Usage comes from the final chunk (`choices: []`).
+//! - Bound every answer (`max_tokens`). A call that loops has no other limit
+//!   than the server's own, and the output is what costs. One that reaches the
+//!   bound is rejected, not retried here (that would pay for the loop again);
+//!   the pipeline tries again from its checkpoints.
 //! - `error` is sometimes a string and sometimes `{message}`.
 //! - 429/529/5xx back off (honouring Retry-After); 402 means the budget ran
 //!   out and is never retried; 404 means the configured model is gone, so
@@ -33,6 +37,14 @@ const IDLE: Duration = Duration::from_secs(180);
 /// idle timeout only starts once headers arrive, and reqwest's own timeouts cover
 /// connecting and nothing else.
 const HEADERS: Duration = Duration::from_secs(300);
+/// The most one call may write, reasoning included (`max_tokens`). Across the
+/// 44 courses built so far a call writes about 5,000 tokens (nine in ten
+/// courses average under 6,000), so this is six times the usual. It is there
+/// for the call that never stops: that has no other bound than the server's
+/// own, 262,144 tokens for the model this was built against, which is about
+/// $1.10 and tens of minutes for one call. See `read_stream` for what the
+/// limit being reached means.
+const MAX_OUTPUT_TOKENS: u32 = 32_768;
 
 // Prices in USD per million tokens: Muse Spark Open's list price (Oct 2026),
 // used whatever the server, so cost figures are exact only for that model on
@@ -132,6 +144,7 @@ impl Llm {
                 "model": model,
                 "messages": req.messages,
                 "reasoning_effort": req.effort,
+                "max_tokens": MAX_OUTPUT_TOKENS,
                 "stream": true,
                 "stream_options": {"include_usage": true},
             });
@@ -153,6 +166,10 @@ impl Llm {
                 }
                 Ok(resp) if resp.status().is_success() => match read_stream(resp).await {
                     Ok(done) => return Ok(done),
+                    // A call that reached the output limit is not asked again
+                    // here: one that loops would loop again, at the full cost
+                    // each time. The pipeline retries from its checkpoints.
+                    Err(e) if e.downcast_ref::<LlmError>().is_some() => return Err(e),
                     Err(e) => {
                         last_err = e;
                         backoff(attempt, None)
@@ -259,7 +276,9 @@ async fn read_stream(resp: reqwest::Response) -> Result<(String, Usage)> {
     }
     match finish.as_deref() {
         Some("stop") => {}
-        Some("length") => return Err(LlmError::Rejected("the answer hit the output limit".into()).into()),
+        Some("length") => {
+            return Err(LlmError::Rejected(format!("the answer hit the output limit (asked for at most {MAX_OUTPUT_TOKENS} tokens)")).into());
+        }
         Some(other) => bail!("stream finished with {other}"),
         None => bail!("stream ended before the answer finished"),
     }
@@ -363,6 +382,14 @@ mod tests {
         "data: [DONE]\n\n",
     );
 
+    /// A stream cut off by the output limit: the server says `length`, not `stop`.
+    const CUT_OFF_STREAM: &str = concat!(
+        "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"and again\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":151,\"completion_tokens\":32768}}\n\n",
+        "data: [DONE]\n\n",
+    );
+
     #[tokio::test]
     async fn a_stream_with_no_cached_count_is_read_and_priced_in_full() {
         // 401 unless the proxy token is sent as a bearer, so success proves it was.
@@ -413,6 +440,49 @@ mod tests {
         let llm = Llm::new(&endpoint(serve(app).await), 1).unwrap();
         let err = llm.chat(&request(vec![])).await.unwrap_err();
         assert_eq!(err.to_string(), "model API rejected the request: stand-in HTTP 401: Webhook token not found: wk-x");
+    }
+
+    #[tokio::test]
+    async fn every_call_asks_for_a_bounded_answer() {
+        let seen = std::sync::Arc::new(Mutex::new(Vec::<Value>::new()));
+        let sink = seen.clone();
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(move |Json(body): Json<Value>| {
+                let sink = sink.clone();
+                async move {
+                    sink.lock().unwrap().push(body);
+                    ([("content-type", "text/event-stream")], SAMPLE_STREAM)
+                }
+            }),
+        );
+        let llm = Llm::new(&endpoint(serve(app).await), 1).unwrap();
+        llm.chat(&request(vec![json!({"role": "user", "content": "hi"})])).await.unwrap();
+        let bodies = seen.lock().unwrap();
+        assert_eq!(bodies.len(), 1);
+        assert_eq!(bodies[0]["max_tokens"], json!(MAX_OUTPUT_TOKENS));
+    }
+
+    #[tokio::test]
+    async fn a_call_that_reaches_the_output_limit_is_rejected_and_not_asked_again() {
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = asked.clone();
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(move || {
+                let counter = counter.clone();
+                async move {
+                    counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    ([("content-type", "text/event-stream")], CUT_OFF_STREAM)
+                }
+            }),
+        );
+        let llm = Llm::new(&endpoint(serve(app).await), 1).unwrap();
+        let err = llm.chat(&request(vec![])).await.unwrap_err();
+        assert!(matches!(err.downcast_ref::<LlmError>(), Some(LlmError::Rejected(_))), "{err:#}");
+        assert!(err.to_string().contains(&MAX_OUTPUT_TOKENS.to_string()), "the message names the limit: {err}");
+        // One call that loops is bad enough; asking again would pay for it again.
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
