@@ -367,6 +367,20 @@ async fn ingest_one(id: &str) -> Result<()> {
             None => bail!("no source"),
         },
     };
+    if !paper.pages.is_empty() {
+        // What the model reads is the pages, so write them out to look at.
+        use base64::Engine;
+        let dir = format!("tmp/{}", arxiv::alias(id));
+        std::fs::create_dir_all(&dir)?;
+        let mut kb = 0;
+        for (i, page) in paper.pages.iter().enumerate() {
+            let png = base64::prelude::BASE64_STANDARD.decode(page)?;
+            kb += png.len() / 1024;
+            std::fs::write(format!("{dir}/p{:02}.png", i + 1), png)?;
+        }
+        println!("source: pdf | {} pages as images | {kb} KB\nwrote {dir}/", paper.pages.len());
+        return Ok(());
+    }
     println!(
         "source: {} | {} chars | ~{}K tokens | {} figures",
         paper.kind,

@@ -7,10 +7,26 @@
 //!
 //! Fallback: the LaTeX source tarball, read entirely in memory (nothing is
 //! written to disk, so there is no path to traverse), with `\input`s inlined.
-//! The model reads raw LaTeX fine. PDF-only submissions are not supported.
+//! The model reads raw LaTeX fine.
+//!
+//! Last resort: a submission that is only a PDF is drawn page by page into
+//! images (`render_pdf`), and `pipeline::paper_message` sends those to every
+//! call. The images go as images, not as a PDF attachment: the model server
+//! reads at most 20 pages of an attached PDF per request (measured: a 45-page
+//! PDF showed pages 1 to 20, two PDFs in one request still showed 20 pages in
+//! all, and no request option raised it), while it took 100 ordinary images in
+//! one request. The drawing is `hayro`, in safe Rust, because a PDF is
+//! untrusted input and this runs in the server that holds the keys. A PDF has
+//! no figures a lesson can show.
 
 use anyhow::{Result, bail};
+use base64::Engine;
+use base64::prelude::BASE64_STANDARD;
 use ego_tree::NodeRef;
+use hayro::hayro_interpret::InterpreterSettings;
+use hayro::hayro_syntax::Pdf;
+use hayro::vello_cpu::color::palette::css::WHITE;
+use hayro::{PixmapSettings, RenderCache, RenderSettings, render};
 use regex::Regex;
 use scraper::{Html, Node, Selector};
 use serde::{Deserialize, Serialize};
@@ -20,6 +36,22 @@ use std::sync::LazyLock;
 
 /// About 300K tokens. Longer papers are rejected rather than half-read.
 pub const MAX_CHARS: usize = 1_000_000;
+/// The largest PDF file drawn: a bound on the memory and time spent on an
+/// untrusted file.
+pub const MAX_PDF: usize = 25 * 1024 * 1024;
+/// The most pages of a PDF taken. Like `MAX_CHARS`, a longer paper is
+/// rejected rather than half-read. At about 1,300 tokens a page this is
+/// about 80K tokens a call, cached after the first.
+pub const MAX_PDF_PAGES: usize = 60;
+/// How wide a drawn page is, in pixels: about 100 dpi for A4, and about 1,300
+/// tokens a page for the model, whatever the paper size.
+const PAGE_WIDE_PX: f32 = 833.0;
+/// How tall a drawn page may be; a page of a stranger shape is shrunk to fit,
+/// so it cannot cost, or weigh, an absurd amount.
+const PAGE_HIGH_PX: f32 = 1400.0;
+/// The most the drawn pages may weigh together as PNG, since they ride in
+/// every call of a build. Tried up to this: 60 dense pages, a 28 MB request.
+const MAX_PDF_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Figure {
@@ -31,10 +63,15 @@ pub struct Figure {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Paper {
-    /// `html` or `latex`.
+    /// `html`, `latex` or `pdf`.
     pub kind: String,
+    /// Empty for a PDF.
     pub text: String,
     pub figures: Vec<Figure>,
+    /// The pages, in order, as base64 PNG images, when `kind` is `pdf`. A
+    /// paper stored before PDFs were read has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pages: Vec<String>,
 }
 
 /// A paper we can't read, as opposed to a failure worth retrying.
@@ -58,7 +95,7 @@ pub fn from_latexml(page_url: &str, html: &str) -> Result<Paper> {
     }
     let text = tidy(&w.out);
     check_size(&text)?;
-    Ok(Paper { kind: "html".into(), text, figures: w.figures })
+    Ok(Paper { kind: "html".into(), text, figures: w.figures, pages: Vec::new() })
 }
 
 struct Walker {
@@ -218,9 +255,54 @@ fn check_size(text: &str) -> Result<()> {
 const MAX_UNPACKED: u64 = 50 * 1024 * 1024;
 const MAX_ENTRIES: usize = 2_000;
 
+/// Draw every page of a PDF to a PNG, base64, in order, each `PAGE_WIDE_PX`
+/// wide (shorter if that would pass `PAGE_HIGH_PX` tall). A PDF that can't be
+/// read, has too many pages, or draws to too much data is `Unsupported`. The
+/// file is untrusted, so a panic while drawing it is caught and told the same
+/// way, and the pipeline calls this off its async threads.
+fn render_pdf(bytes: &[u8]) -> Result<Vec<String>> {
+    let cant = |why: &str| Unsupported(format!("this paper was submitted as a PDF only, and {why}, which paper-bro can't read yet"));
+    std::panic::catch_unwind(|| -> Result<Vec<String>> {
+        let pdf = Pdf::new(bytes.to_vec()).map_err(|_| cant("its PDF is damaged or protected"))?;
+        let pages = pdf.pages();
+        if pages.len() == 0 {
+            return Err(cant("its PDF has no pages").into());
+        }
+        if pages.len() > MAX_PDF_PAGES {
+            return Err(cant(&format!("its PDF has more than {MAX_PDF_PAGES} pages")).into());
+        }
+        let cache = RenderCache::new();
+        let (settings, render_settings) = (InterpreterSettings::default(), RenderSettings::default());
+        let (mut out, mut weight) = (Vec::with_capacity(pages.len()), 0usize);
+        for page in pages.iter() {
+            let (w, h) = page.render_dimensions();
+            if !(w.is_finite() && h.is_finite() && w >= 1.0 && h >= 1.0) {
+                return Err(cant("a page of its PDF has no size").into());
+            }
+            let scale = (PAGE_WIDE_PX / w).min(PAGE_HIGH_PX / h);
+            let pixmap = render(page, &cache, &settings, &render_settings, &PixmapSettings { x_scale: scale, y_scale: scale, bg_color: WHITE });
+            let png = pixmap.into_png().map_err(|_| cant("a page of its PDF could not be drawn"))?;
+            weight += png.len();
+            if weight > MAX_PDF_IMAGE_BYTES {
+                return Err(cant("its pages come to too much data").into());
+            }
+            out.push(BASE64_STANDARD.encode(png));
+        }
+        Ok(out)
+    })
+    .unwrap_or_else(|_| Err(cant("its PDF could not be drawn").into()))
+}
+
 pub fn from_eprint(bytes: &[u8]) -> Result<Paper> {
     if bytes.starts_with(b"%PDF") {
-        return Err(Unsupported("this paper was submitted as a PDF only, which paper-bro can't read yet".into()).into());
+        if bytes.len() > MAX_PDF {
+            return Err(Unsupported(format!(
+                "this paper was submitted as a PDF only, and its PDF is over {} MB, which paper-bro can't read yet",
+                MAX_PDF / (1024 * 1024)
+            ))
+            .into());
+        }
+        return Ok(Paper { kind: "pdf".into(), text: String::new(), figures: Vec::new(), pages: render_pdf(bytes)? });
     }
     let raw = if bytes.starts_with(&[0x1f, 0x8b]) {
         let mut out = Vec::new();
@@ -277,7 +359,7 @@ pub fn from_eprint(bytes: &[u8]) -> Result<Paper> {
     };
     let text = tidy(&inline(&files, &main, 0));
     check_size(&text)?;
-    Ok(Paper { kind: "latex".into(), text, figures: Vec::new() })
+    Ok(Paper { kind: "latex".into(), text, figures: Vec::new(), pages: Vec::new() })
 }
 
 static TEX_COMMAND: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\[a-zA-Z]{2,}").unwrap());
@@ -385,9 +467,89 @@ mod tests {
         assert!(!p.text.contains("nope"));
     }
 
+    /// A valid PDF of `sizes.len()` pages, each `(width, height)` in points; the
+    /// first page has a black square on it, the others are blank.
+    fn pdf_of(sizes: &[(u32, u32)]) -> Vec<u8> {
+        let n = sizes.len();
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut at = vec![];
+        let mut obj = |out: &mut Vec<u8>, body: String| {
+            at.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", at.len()).as_bytes());
+        };
+        obj(&mut out, "<< /Type /Catalog /Pages 2 0 R >>".into());
+        let kids: Vec<String> = (0..n).map(|i| format!("{} 0 R", 3 + 2 * i)).collect();
+        obj(&mut out, format!("<< /Type /Pages /Kids [{}] /Count {n} >>", kids.join(" ")));
+        for (i, (w, h)) in sizes.iter().enumerate() {
+            obj(&mut out, format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {w} {h}] /Contents {} 0 R >>", 4 + 2 * i));
+            let ink = if i == 0 { "0 0 0 rg 10 10 40 40 re f" } else { "" };
+            obj(&mut out, format!("<< /Length {} >>\nstream\n{ink}\nendstream", ink.len() + 1));
+        }
+        let xref = out.len();
+        out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", at.len() + 1).as_bytes());
+        for offset in &at {
+            out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", at.len() + 1).as_bytes());
+        out
+    }
+
+    /// Width and height of a base64 PNG, from its header.
+    fn png_size(b64: &str) -> (u32, u32) {
+        let png = BASE64_STANDARD.decode(b64).unwrap();
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n", "a PNG");
+        (u32::from_be_bytes(png[16..20].try_into().unwrap()), u32::from_be_bytes(png[20..24].try_into().unwrap()))
+    }
+
     #[test]
-    fn pdf_only_is_unsupported() {
-        let e = from_eprint(b"%PDF-1.5 ...").unwrap_err();
-        assert!(e.downcast_ref::<Unsupported>().is_some());
+    fn a_pdf_only_paper_is_drawn_one_image_per_page() {
+        let p = from_eprint(&pdf_of(&[(612, 792), (612, 792), (612, 792)])).unwrap();
+        assert_eq!((p.kind.as_str(), p.text.as_str(), p.figures.len(), p.pages.len()), ("pdf", "", 0, 3));
+        // Every page is the same width, whatever the paper size, so costs the same.
+        for page in &p.pages {
+            assert_eq!(png_size(page), (833, 1078));
+        }
+        assert_ne!(p.pages[0], p.pages[1], "the first page has ink on it, the second does not");
+        assert_eq!(p.pages[1], p.pages[2], "blank pages draw alike");
+    }
+
+    #[test]
+    fn a_page_of_another_shape_is_scaled_to_the_same_width_and_a_very_tall_one_to_fit() {
+        let p = from_eprint(&pdf_of(&[(595, 842), (300, 3000)])).unwrap();
+        assert_eq!(png_size(&p.pages[0]), (833, 1178), "A4");
+        let (w, h) = png_size(&p.pages[1]);
+        assert!(h <= 1400 && w < 833, "a tall page is shrunk to fit: {w}x{h}");
+    }
+
+    #[test]
+    fn a_pdf_over_the_page_limit_is_unsupported_before_any_page_is_drawn() {
+        let e = from_eprint(&pdf_of(&vec![(612, 792); MAX_PDF_PAGES + 1])).unwrap_err();
+        let u = e.downcast_ref::<Unsupported>().expect("rejected, not a failure worth retrying");
+        assert!(u.0.contains("more than 60 pages"), "{}", u.0);
+    }
+
+    #[test]
+    fn a_pdf_over_the_size_limit_is_unsupported_and_names_the_limit() {
+        let mut big = b"%PDF-1.5 ".to_vec();
+        big.resize(MAX_PDF + 1, b' ');
+        let e = from_eprint(&big).unwrap_err();
+        let u = e.downcast_ref::<Unsupported>().expect("an unsupported paper, not a failure worth retrying");
+        assert!(u.0.contains("over 25 MB"), "{}", u.0);
+    }
+
+    #[test]
+    fn a_damaged_pdf_is_unsupported_and_does_not_crash_the_server() {
+        for junk in [&b"%PDF-1.5 ..."[..], &b"%PDF-1.7\n1 0 obj << /Type /Catalog >>"[..], &b"%PDF"[..]] {
+            let e = from_eprint(junk).unwrap_err();
+            assert!(e.downcast_ref::<Unsupported>().is_some(), "{e:#}");
+        }
+    }
+
+    #[test]
+    fn a_paper_stored_before_pdfs_were_read_still_loads() {
+        let p: Paper = serde_json::from_str(r#"{"kind":"latex","text":"x","figures":[]}"#).unwrap();
+        assert!(p.pages.is_empty());
+        // And a text paper doesn't gain a `pages` key when stored again.
+        assert!(!serde_json::to_string(&p).unwrap().contains("pages"));
     }
 }

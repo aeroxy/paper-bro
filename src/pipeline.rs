@@ -159,22 +159,41 @@ fn banned(lesson: &Lesson) -> Vec<String> {
     hits.into_iter().map(|h| format!("the lab uses `{h}`, which labs may not use")).collect()
 }
 
-fn paper_message(meta: &Meta, paper: &Paper) -> String {
+/// The message every call of a build starts with: the paper between the
+/// markers the system prompt names. For an HTML or LaTeX paper it is text, and
+/// its bytes are the cached prompt prefix, so they must not change. For a PDF
+/// it is the same markers around the drawn pages (`ingest::render_pdf`), each
+/// an image after a label, in order: not a PDF attachment, which the model
+/// server reads only 20 pages of.
+fn paper_message(meta: &Meta, paper: &Paper) -> Value {
     let figures = if paper.figures.is_empty() {
         "This paper has no figures that can be shown.".to_string()
     } else {
         let list: Vec<String> = paper.figures.iter().map(|f| format!("- {}: {}", f.key, f.caption)).collect();
         format!("Figures that can be shown in a lesson (key: caption):\n{}", list.join("\n"))
     };
-    format!(
-        "<<<PAPER arXiv:{id} version {v}\nTitle: {title}\nAuthors: {authors}\nSource: {kind}\n\n{figures}\n\n{text}\nEND PAPER>>>",
+    let kind = match (paper.kind.as_str(), paper.pages.len()) {
+        ("html", _) => "arXiv's HTML rendering, converted to text with $math$".to_string(),
+        (_, 0) => "the LaTeX source".to_string(),
+        (_, n) => format!("the paper's PDF, all {n} pages, attached below as images in order, each after a label \"[page k]\""),
+    };
+    let head = format!(
+        "<<<PAPER arXiv:{id} version {v}\nTitle: {title}\nAuthors: {authors}\nSource: {kind}\n\n{figures}\n\n",
         id = meta.id,
         v = meta.version,
         title = meta.title,
         authors = meta.authors.join(", "),
-        kind = if paper.kind == "html" { "arXiv's HTML rendering, converted to text with $math$" } else { "the LaTeX source" },
-        text = paper.text,
-    )
+    );
+    if paper.pages.is_empty() {
+        return json!(format!("{head}{}\nEND PAPER>>>", paper.text));
+    }
+    let mut parts = vec![json!({"type": "text", "text": head})];
+    for (i, page) in paper.pages.iter().enumerate() {
+        parts.push(json!({"type": "text", "text": format!("[page {}]", i + 1)}));
+        parts.push(json!({"type": "image_url", "image_url": {"url": format!("data:image/png;base64,{page}")}}));
+    }
+    parts.push(json!({"type": "text", "text": "END PAPER>>>"}));
+    Value::Array(parts)
 }
 
 /// The lessons whose labs are tested and repaired. A lab dropped by an earlier
@@ -207,7 +226,7 @@ impl Job {
         db::put_artifact(&self.app.pool, &self.id, key, &serde_json::to_string(value)?).await
     }
 
-    fn messages(&self, paper_msg: &str, task: Value) -> Vec<Value> {
+    fn messages(&self, paper_msg: &Value, task: Value) -> Vec<Value> {
         vec![
             json!({"role": "system", "content": SYSTEM}),
             json!({"role": "user", "content": paper_msg}),
@@ -241,11 +260,18 @@ impl Job {
                 let paper = match app.arxiv.html(&meta.id, meta.version).await? {
                     Some((url, html)) => ingest::from_latexml(&url, &html)?,
                     None => match app.arxiv.eprint(&meta.id, meta.version).await? {
-                        Some(bytes) => ingest::from_eprint(&bytes)?,
+                        // CPU work on an untrusted file (a PDF is drawn here): off
+                        // the async threads, and a crash in it is a paper we can't read.
+                        Some(bytes) => tokio::task::spawn_blocking(move || ingest::from_eprint(&bytes))
+                            .await
+                            .map_err(|_| Unsupported("paper-bro couldn't read this paper's source".into()))??,
                         None => return Err(Unsupported("arXiv has no readable version of this paper".into()).into()),
                     },
                 };
                 db::set_source_kind(&app.pool, &self.id, &paper.kind).await?;
+                if !paper.pages.is_empty() {
+                    self.note(&format!("the paper is a PDF only: the model reads its {} pages as images", paper.pages.len())).await;
+                }
                 self.save("paper", &paper).await?;
                 paper
             }
@@ -447,7 +473,7 @@ impl Job {
         self.app.emit(&self.id, "notes", message).await;
     }
 
-    async fn outline(&self, paper_msg: &str, paper: &Paper) -> Result<Outline> {
+    async fn outline(&self, paper_msg: &Value, paper: &Paper) -> Result<Outline> {
         let mut rejected: Option<String> = None;
         for _ in 0..2 {
             let task = match &rejected {
@@ -477,7 +503,7 @@ impl Job {
 
     async fn write_lesson(
         &self,
-        paper_msg: &str,
+        paper_msg: &Value,
         outline: &Outline,
         i: usize,
         fix: Option<(&Lesson, &Vec<String>)>,
@@ -531,7 +557,7 @@ impl Job {
         .await
     }
 
-    async fn review(&self, paper_msg: &str, outline: &Outline, lessons: &[Lesson], report: &qa::Report) -> Result<Review> {
+    async fn review(&self, paper_msg: &Value, outline: &Outline, lessons: &[Lesson], report: &qa::Report) -> Result<Review> {
         let mut text = String::new();
         for (i, (plan, l)) in outline.lessons.iter().zip(lessons).enumerate() {
             let qa = match report.lab(i + 1) {
@@ -572,7 +598,7 @@ impl Job {
         Ok(r)
     }
 
-    async fn fix_quiz(&self, paper_msg: &str, outline: &Outline, findings: &[String]) -> Result<Vec<QuizItem>> {
+    async fn fix_quiz(&self, paper_msg: &Value, outline: &Outline, findings: &[String]) -> Result<Vec<QuizItem>> {
         #[derive(serde::Deserialize)]
         struct Quiz {
             quiz: Vec<QuizItem>,
@@ -638,6 +664,49 @@ mod tests {
     fn a_lab_dropped_by_an_earlier_attempt_is_not_tested_again() {
         assert_eq!(labs_to_test(&[lesson(false), lesson(true), lesson(false)]), vec![0, 2]);
         assert!(labs_to_test(&[lesson(true)]).is_empty());
+    }
+
+    fn meta() -> Meta {
+        Meta {
+            id: "2610.39393".into(),
+            version: 1,
+            title: "A Title".into(),
+            authors: vec!["A. Author".into(), "B. Author".into()],
+            abstract_: String::new(),
+            categories: vec![],
+            license: None,
+            published: None,
+        }
+    }
+
+    #[test]
+    fn a_text_papers_message_keeps_its_exact_text() {
+        // These bytes are the cached prompt prefix of every call: changing them costs money.
+        let paper = Paper { kind: "latex".into(), text: "\\section{Intro}".into(), figures: vec![], pages: vec![] };
+        assert_eq!(
+            paper_message(&meta(), &paper),
+            json!("<<<PAPER arXiv:2610.39393 version 1\nTitle: A Title\nAuthors: A. Author, B. Author\nSource: the LaTeX source\n\nThis paper has no figures that can be shown.\n\n\\section{Intro}\nEND PAPER>>>")
+        );
+    }
+
+    #[test]
+    fn a_pdf_paper_goes_in_as_every_page_image_in_order_between_the_markers() {
+        let paper = Paper { kind: "pdf".into(), text: String::new(), figures: vec![], pages: vec!["QUJD".into(), "REVG".into()] };
+        let msg = paper_message(&meta(), &paper);
+        let parts = msg.as_array().expect("a PDF goes in as message parts, not one string");
+        // head, then a label and an image per page, then the end marker
+        assert_eq!(parts.len(), 1 + 2 * 2 + 1);
+        let head = parts[0]["text"].as_str().unwrap();
+        assert!(head.starts_with("<<<PAPER arXiv:2610.39393 version 1\n"), "{head}");
+        assert!(head.contains("all 2 pages"), "{head}");
+        assert!(head.contains("This paper has no figures that can be shown."), "{head}");
+        assert!(!head.contains("first 20"), "no page of the paper is withheld from the model: {head}");
+        // The shape the model server was shown to read: ordinary images, as data URLs.
+        assert_eq!(parts[1], json!({"type": "text", "text": "[page 1]"}));
+        assert_eq!(parts[2], json!({"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}}));
+        assert_eq!(parts[3], json!({"type": "text", "text": "[page 2]"}));
+        assert_eq!(parts[4], json!({"type": "image_url", "image_url": {"url": "data:image/png;base64,REVG"}}));
+        assert_eq!(parts[5], json!({"type": "text", "text": "END PAPER>>>"}));
     }
 
     #[test]
