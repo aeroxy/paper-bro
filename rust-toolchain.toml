@@ -1,0 +1,5 @@
+# hayro (which draws PDF pages, see src/ingest.rs) needs Rust 1.92. The Linux
+# target is the one the release binary is cross-built for.
+[toolchain]
+channel = "1.92"
+targets = ["x86_64-unknown-linux-musl"]
