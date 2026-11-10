@@ -117,10 +117,21 @@ async fn serve() -> Result<()> {
         tokio::spawn(pipeline::worker(app.clone(), n));
     }
     // Queued work waits for an enqueue to wake a worker; look now instead.
-    // A job a previous process left running is picked up once its lease
-    // (two minutes) runs out.
     for _ in 0..workers {
         app.wake.notify_one();
+    }
+    // A job a previous process left running can only be claimed once its lease
+    // has run out, and a restart is quicker than that, so the look above finds
+    // nothing and nothing would wake a worker again until the next request.
+    // Look once more when every such lease has run out.
+    {
+        let app = app.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(pipeline::LEASE + std::time::Duration::from_secs(5)).await;
+            for _ in 0..workers {
+                app.wake.notify_one();
+            }
+        });
     }
     let admin_app = web::admin(app.clone());
     tokio::spawn(async move {
