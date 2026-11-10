@@ -115,6 +115,18 @@ fn out_of_credit(e: &anyhow::Error) -> bool {
     matches!(e.downcast_ref::<LlmError>(), Some(LlmError::Budget(_)))
 }
 
+/// A call the build can do without (the review, the quiz fix) failed. Out of
+/// credit is the exception: it holds the course like any other call would,
+/// because carrying on would publish the course unreviewed and say nothing.
+/// Anything else is logged and survived.
+fn survive(id: &str, what: &str, e: anyhow::Error) -> Result<()> {
+    if out_of_credit(&e) {
+        return Err(e);
+    }
+    log::warn!("[{id}] {what} failed, carrying on without it: {e:#}");
+    Ok(())
+}
+
 /// The progress stage a failed attempt is reported under. The course page
 /// reads "credit" as "on hold until there is model credit again" and changes
 /// its headline to say so (frontend/src/PaperPage.tsx), so keep the two in step.
@@ -336,15 +348,18 @@ impl Job {
         let review = match self.review(&paper_msg, &outline, &lessons, &report).await {
             Ok(r) => Some(r),
             Err(e) => {
-                log::warn!("[{}] review failed, continuing on browser QA alone: {e:#}", self.id);
+                survive(&self.id, "the review", e)?;
                 None
             }
         };
         let _ = self.save("review:1", &review).await;
         if let Some(r) = review.as_ref().filter(|r| !r.quiz_findings.is_empty()) {
-            if let Ok(q) = self.fix_quiz(&paper_msg, &outline, &r.quiz_findings).await {
-                outline.quiz = q;
-                self.save("outline", &outline).await?;
+            match self.fix_quiz(&paper_msg, &outline, &r.quiz_findings).await {
+                Ok(q) => {
+                    outline.quiz = q;
+                    self.save("outline", &outline).await?;
+                }
+                Err(e) => survive(&self.id, "the quiz fix", e)?,
             }
         }
         let mut problems = self.problems(&lessons, &report, review.as_ref(), &all);
@@ -727,6 +742,17 @@ mod tests {
         assert_eq!(failure_stage(true, true), "credit");
         assert_eq!(failure_stage(true, false), "retrying");
         assert_eq!(failure_stage(false, false), "failed");
+    }
+
+    #[test]
+    fn running_out_of_credit_in_a_call_the_build_can_skip_still_holds_the_course() {
+        // The review and the quiz fix may fail without failing the build, but a 402
+        // would otherwise let a course through unreviewed, with no credit message.
+        let credit = anyhow::Error::from(LlmError::Budget("out of credit".into())).context("review");
+        assert!(survive("2610.39393", "the review", credit).is_err());
+        let refused = anyhow::Error::from(LlmError::Rejected("HTTP 400".into()));
+        assert!(survive("2610.39393", "the review", refused).is_ok());
+        assert!(survive("2610.39393", "the quiz fix", anyhow::anyhow!("the model returned invalid JSON")).is_ok());
     }
 
     #[test]
