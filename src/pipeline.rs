@@ -220,6 +220,25 @@ impl Job {
         self.usage.lock().unwrap().add(&u);
     }
 
+    /// One strict-JSON model call, its cost added to the job's: when it
+    /// answers, and when it is cut off at the output limit, whose tokens were
+    /// written and billed though the answer was thrown away. The spend guard
+    /// counts what is added here.
+    async fn ask<T: serde::de::DeserializeOwned>(&self, req: &Request<'_>) -> Result<T> {
+        match self.app.llm.json::<T>(req).await {
+            Ok((answer, used)) => {
+                self.add(used);
+                Ok(answer)
+            }
+            Err(e) => {
+                if let Some(used) = e.downcast_ref::<LlmError>().and_then(LlmError::spent) {
+                    self.add(used);
+                }
+                Err(e)
+            }
+        }
+    }
+
     fn usage_json(&self) -> Value {
         serde_json::to_value(*self.usage.lock().unwrap()).unwrap_or_default()
     }
@@ -501,8 +520,7 @@ impl Job {
                 schema: Some(("course_outline", course::outline_schema())),
                 affinity: &self.id,
             };
-            let (mut o, u): (Outline, Usage) = self.app.llm.json(&req).await?;
-            self.add(u);
+            let mut o: Outline = self.ask(&req).await?;
             for l in &mut o.lessons {
                 if !paper.figures.iter().any(|f| f.key == l.figure) {
                     l.figure.clear();
@@ -543,8 +561,7 @@ impl Job {
             schema: Some(("course_lesson", course::lesson_schema())),
             affinity: &self.id,
         };
-        let (mut l, u): (Lesson, Usage) = self.app.llm.json(&req).await?;
-        self.add(u);
+        let mut l: Lesson = self.ask(&req).await?;
         if l.figure != plan.figure {
             l.figure.clear();
         }
@@ -608,8 +625,7 @@ impl Job {
             schema: Some(("course_review", course::review_schema())),
             affinity: &self.id,
         };
-        let (r, u): (Review, Usage) = self.app.llm.json(&req).await?;
-        self.add(u);
+        let r: Review = self.ask(&req).await?;
         Ok(r)
     }
 
@@ -626,8 +642,7 @@ impl Job {
             findings.iter().map(|f| format!("- {f}")).collect::<Vec<_>>().join("\n")
         );
         let req = Request { messages: self.messages(paper_msg, json!(task)), effort: "medium", schema: Some(("course_quiz", schema)), affinity: &self.id };
-        let (q, u): (Quiz, Usage) = self.app.llm.json(&req).await?;
-        self.add(u);
+        let q: Quiz = self.ask(&req).await?;
         let mut fixed = outline.clone();
         fixed.quiz = q.quiz;
         fixed.validate().map_err(anyhow::Error::msg)?;

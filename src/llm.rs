@@ -82,12 +82,26 @@ pub enum LlmError {
     Budget(String),
     /// A request the provider rejected outright (400 and friends).
     Rejected(String),
+    /// The answer reached the output limit and was thrown away. The tokens
+    /// were written and billed all the same, so what the call cost rides with
+    /// the error, for the caller to count (`spent`).
+    Cut(Usage),
 }
 impl std::fmt::Display for LlmError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Budget(m) => write!(f, "model API budget exhausted: {m}"),
             Self::Rejected(m) => write!(f, "model API rejected the request: {m}"),
+            Self::Cut(_) => write!(f, "the answer hit the output limit (asked for at most {MAX_OUTPUT_TOKENS} tokens)"),
+        }
+    }
+}
+impl LlmError {
+    /// What a failed call cost anyway, when it is known.
+    pub fn spent(&self) -> Option<Usage> {
+        match self {
+            Self::Cut(used) => Some(*used),
+            _ => None,
         }
     }
 }
@@ -274,14 +288,6 @@ async fn read_stream(resp: reqwest::Response) -> Result<(String, Usage)> {
             }
         }
     }
-    match finish.as_deref() {
-        Some("stop") => {}
-        Some("length") => {
-            return Err(LlmError::Rejected(format!("the answer hit the output limit (asked for at most {MAX_OUTPUT_TOKENS} tokens)")).into());
-        }
-        Some(other) => bail!("stream finished with {other}"),
-        None => bail!("stream ended before the answer finished"),
-    }
     let n = |v: &Value| v.as_u64().unwrap_or(0);
     let prompt = n(&usage["prompt_tokens"]);
     let cached = n(&usage["prompt_tokens_details"]["cached_tokens"]);
@@ -290,17 +296,22 @@ async fn read_stream(resp: reqwest::Response) -> Result<(String, Usage)> {
         + cached as f64 * PRICE_CACHED
         + completion as f64 * PRICE_OUTPUT)
         / 1e6;
-    Ok((
-        content,
-        Usage {
-            prompt,
-            cached,
-            completion,
-            reasoning: n(&usage["completion_tokens_details"]["reasoning_tokens"]).max(n(&usage["reasoning_tokens"])),
-            cost_usd: cost,
-            calls: 1,
-        },
-    ))
+    let used = Usage {
+        prompt,
+        cached,
+        completion,
+        reasoning: n(&usage["completion_tokens_details"]["reasoning_tokens"]).max(n(&usage["reasoning_tokens"])),
+        cost_usd: cost,
+        calls: 1,
+    };
+    match finish.as_deref() {
+        Some("stop") => {}
+        // Thrown away, but written and billed: its cost goes with the error.
+        Some("length") => return Err(LlmError::Cut(used).into()),
+        Some(other) => bail!("stream finished with {other}"),
+        None => bail!("stream ended before the answer finished"),
+    }
+    Ok((content, used))
 }
 
 /// Make a JSON schema strict-mode clean: every object closed and every
@@ -479,8 +490,13 @@ mod tests {
         );
         let llm = Llm::new(&endpoint(serve(app).await), 1).unwrap();
         let err = llm.chat(&request(vec![])).await.unwrap_err();
-        assert!(matches!(err.downcast_ref::<LlmError>(), Some(LlmError::Rejected(_))), "{err:#}");
+        let Some(LlmError::Cut(used)) = err.downcast_ref::<LlmError>() else { panic!("{err:#}") };
         assert!(err.to_string().contains(&MAX_OUTPUT_TOKENS.to_string()), "the message names the limit: {err}");
+        // The tokens were written and billed, so the call's cost comes with the error.
+        assert_eq!((used.prompt, used.completion, used.calls), (151, 32768, 1));
+        assert!(used.cost_usd > 0.13, "the cut-off call is priced: {}", used.cost_usd);
+        assert_eq!(err.downcast_ref::<LlmError>().and_then(LlmError::spent).map(|u| u.completion), Some(32768));
+        assert!(LlmError::Budget("out of credit".into()).spent().is_none());
         // One call that loops is bad enough; asking again would pay for it again.
         assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
