@@ -41,6 +41,14 @@ const REVIEW: &str = include_str!("../prompts/review.md");
 pub const LEASE: Duration = Duration::from_secs(120);
 const HEARTBEAT: Duration = Duration::from_secs(30);
 const MAX_ATTEMPTS: i32 = 3;
+/// How a build waits for GitHub Pages to serve the page it just committed:
+/// it asks every `PAGE_POLL`, `PAGE_TRIES` times (15 minutes in all), and only
+/// then calls the course ready anyway. Pages usually takes seconds, but one
+/// deploy took 5 minutes 40 seconds (2026-11-10), after a 5-minute wait had
+/// given up and the course was announced with a link that still gave a 404.
+/// The wait holds a worker, so this is as long as it is worth.
+const PAGE_POLL: Duration = Duration::from_secs(5);
+const PAGE_TRIES: u32 = 180;
 
 pub async fn worker(app: Arc<App>, n: usize) {
     log::info!("worker {n} up");
@@ -393,8 +401,9 @@ impl Job {
             // Pages deploys the commit in a minute or so. Wait, so the course
             // isn't called ready, or announced, while its link is a 404.
             let url = github::page_url(&cfg.github, &alias);
-            if !github::wait_until_live(&url, Duration::from_secs(5), 60).await {
-                self.note("GitHub Pages wasn't serving the page five minutes after the commit").await;
+            if !github::wait_until_live(&url, PAGE_POLL, PAGE_TRIES).await {
+                let minutes = PAGE_POLL.as_secs() * u64::from(PAGE_TRIES) / 60;
+                self.note(&format!("GitHub Pages wasn't serving the page {minutes} minutes after the commit")).await;
             }
             (path, url)
         } else {
