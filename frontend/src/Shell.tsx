@@ -12,6 +12,11 @@ export function Logo({ className = 'h-7 w-7' }: { className?: string }) {
   )
 }
 
+// Where to chip in: a redirect to the payment page, so the page can change
+// without this changing. The server's out-of-credit message names the same
+// address (src/pipeline.rs), and PaperPage turns it into a link.
+export const DONATE = 'https://aero-sg.us.to'
+
 export function Shell({ children }: { children: ReactNode }) {
   return (
     <>
@@ -30,6 +35,8 @@ export function Shell({ children }: { children: ReactNode }) {
         Courses are written by an AI model from the paper and hosted on{' '}
         <a className="text-fg-2 underline-offset-2 hover:underline" href="https://github.com/paper-bro/paper-bro.github.io">GitHub Pages</a>. Papers come from{' '}
         <a className="text-fg-2 underline-offset-2 hover:underline" href="https://arxiv.org">arXiv</a>; paper-bro isn't affiliated with it.
+        Writing courses costs real money, so if paper-bro is useful to you, you can{' '}
+        <a className="text-fg-2 underline-offset-2 hover:underline" href={DONATE} target="_blank" rel="noopener">chip in</a>.
       </footer>
     </>
   )
