@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useSearchParams } from 'react-router-dom'
 import { ApiError, build, eventsUrl, getPaper, report, type Paper, type Progress } from './api'
 import { parseId } from './arxiv'
+import { DONATE } from './Shell'
 
 const STEPS: { stage: string; label: string }[] = [
   { stage: 'queued', label: 'In the queue' },
@@ -116,6 +117,26 @@ export function PaperPage() {
   )
 }
 
+// A progress message as text, except that the donation address the server
+// names when it runs out of credit (src/pipeline.rs) becomes a link. Only
+// that address: other text can come from a paper, and stays plain.
+function Message({ text }: { text: string }) {
+  return (
+    <>
+      {text.split(DONATE).map((part, i) => (
+        <Fragment key={i}>
+          {i > 0 && (
+            <a className="text-action underline underline-offset-2 hover:text-action-700" href={DONATE} target="_blank" rel="noopener">
+              {DONATE}
+            </a>
+          )}
+          {part}
+        </Fragment>
+      ))}
+    </>
+  )
+}
+
 function PaperCard({ paper }: { paper: Paper }) {
   const year = paper.published ? new Date(paper.published).getFullYear() : null
   const authors = paper.authors.length > 6 ? `${paper.authors.slice(0, 6).join(', ')} and others` : paper.authors.join(', ')
@@ -159,14 +180,21 @@ function Building({ paper, onDone }: { paper: Paper; onDone: () => void }) {
   const latest = [...events].reverse().find((e) => STEPS.some((s) => s.stage === e.stage))
   const current = Math.max(0, STEPS.findIndex((s) => s.stage === (latest?.stage ?? paper.stage ?? 'queued')))
   const visible = events.filter((e) => !['visitor-error', 'report'].includes(e.stage))
+  // The server reports "credit" when the model provider is out of credit
+  // (src/pipeline.rs). The course then waits, so the headline says that and
+  // doesn't promise minutes. The latest event decides: the headline follows
+  // the log as it happens, and lets go once the course moves again.
+  const onHold = visible[visible.length - 1]?.stage === 'credit'
 
   return (
     <div className="card">
       <div className="eyebrow">Building the course</div>
       <h2 className="mt-2 text-2xl font-extrabold tracking-tight">
-        {paper.status === 'queued' && paper.queue_position && paper.queue_position > 1
-          ? `Number ${paper.queue_position} in the queue.`
-          : 'This takes 5 to 10 minutes.'}
+        {onHold
+          ? 'Waiting for model credit.'
+          : paper.status === 'queued' && paper.queue_position && paper.queue_position > 1
+            ? `Number ${paper.queue_position} in the queue.`
+            : 'This takes 5 to 10 minutes.'}
       </h2>
       <p className="mt-2 text-[13.5px] text-fg-3">
         You can leave and come back: the course will be here when it's done. To hear when it is, follow{' '}
@@ -198,7 +226,7 @@ function Building({ paper, onDone }: { paper: Paper; onDone: () => void }) {
         <div className="mt-5 max-h-48 overflow-auto rounded-xl border border-line bg-sunken p-3 font-mono text-[12px] leading-relaxed text-fg-2">
           {visible.map((e) => (
             <div key={e.id}>
-              <span className="text-fg-3">{new Date(e.at).toLocaleTimeString()}</span> {e.message}
+              <span className="text-fg-3">{new Date(e.at).toLocaleTimeString()}</span> <Message text={e.message} />
             </div>
           ))}
         </div>

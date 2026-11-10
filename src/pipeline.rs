@@ -73,15 +73,17 @@ pub async fn process(app: &Arc<App>, id: &str) {
     hb.abort();
     if let Err(e) = result {
         let usage = job.usage_json();
-        let budget = e.downcast_ref::<LlmError>().is_some_and(|l| matches!(l, LlmError::Budget(_)));
+        let budget = out_of_credit(&e);
         let unsupported = e.downcast_ref::<Unsupported>().is_some();
         let attempts = db::attempts(&app.pool, id).await.unwrap_or(MAX_ATTEMPTS);
         let retry = budget || (!unsupported && attempts < MAX_ATTEMPTS);
-        let shown = if unsupported { e.to_string() } else { "paper-bro hit a problem building this course.".to_string() };
+        let shown = visitor_message(&e);
         log::error!("[{id}] attempt {attempts} failed: {e:#}");
         let _ = db::fail(&app.pool, id, &shown, retry, &usage).await;
-        let note = if retry { format!("{shown} Trying again shortly.") } else { shown };
-        app.emit(id, if retry { "retrying" } else { "failed" }, &note).await;
+        // The out-of-credit text already says it retries, and "shortly" would
+        // be wrong: the worker sits out the next 15 minutes.
+        let note = if retry && !budget { format!("{shown} Trying again shortly.") } else { shown };
+        app.emit(id, failure_stage(retry, budget), &note).await;
         if budget {
             // Out of model budget: stop taking jobs for a while.
             tokio::time::sleep(Duration::from_secs(15 * 60)).await;
@@ -93,6 +95,39 @@ pub async fn process(app: &Arc<App>, id: &str) {
         }
     }
     let _ = app.refresh(id).await;
+}
+
+/// What visitors see when the model provider says paper-bro's account is out
+/// of credit (a 402). The address is the donation page; the course page
+/// turns it into a link and its footer carries the same one
+/// (frontend/src/Shell.tsx).
+const OUT_OF_CREDIT: &str = "paper-bro has run out of model credit, so this course has to wait. It will keep retrying by itself. If you'd like to help top the credit up, you can donate at https://aero-sg.us.to";
+
+fn out_of_credit(e: &anyhow::Error) -> bool {
+    matches!(e.downcast_ref::<LlmError>(), Some(LlmError::Budget(_)))
+}
+
+/// The progress stage a failed attempt is reported under. The course page
+/// reads "credit" as "on hold until there is model credit again" and changes
+/// its headline to say so (frontend/src/PaperPage.tsx), so keep the two in step.
+fn failure_stage(retry: bool, budget: bool) -> &'static str {
+    match (budget, retry) {
+        (true, _) => "credit",
+        (false, true) => "retrying",
+        (false, false) => "failed",
+    }
+}
+
+/// What a visitor is told about a failed attempt. The cause stays in the log:
+/// a provider's error can carry account details.
+fn visitor_message(e: &anyhow::Error) -> String {
+    if out_of_credit(e) {
+        OUT_OF_CREDIT.to_string()
+    } else if e.downcast_ref::<Unsupported>().is_some() {
+        e.to_string()
+    } else {
+        "paper-bro hit a problem building this course.".to_string()
+    }
 }
 
 struct Job {
@@ -594,5 +629,34 @@ mod tests {
     fn a_lab_dropped_by_an_earlier_attempt_is_not_tested_again() {
         assert_eq!(labs_to_test(&[lesson(false), lesson(true), lesson(false)]), vec![0, 2]);
         assert!(labs_to_test(&[lesson(true)]).is_empty());
+    }
+
+    #[test]
+    fn running_out_of_credit_tells_visitors_so_and_where_to_donate() {
+        // The error reaches process() wrapped in the stage's context.
+        let out = anyhow::Error::from(LlmError::Budget("provider: out of credit".into())).context("outline");
+        assert!(out_of_credit(&out));
+        let shown = visitor_message(&out);
+        assert!(shown.contains("run out of model credit"), "{shown}");
+        assert!(shown.contains("https://aero-sg.us.to"), "{shown}");
+        // The provider's own words stay in the log.
+        assert!(!shown.contains("provider: out of credit"), "{shown}");
+    }
+
+    #[test]
+    fn only_the_credit_hold_has_its_own_stage_and_the_others_keep_theirs() {
+        // The page's headline keys on "credit" (frontend/src/PaperPage.tsx).
+        assert_eq!(failure_stage(true, true), "credit");
+        assert_eq!(failure_stage(true, false), "retrying");
+        assert_eq!(failure_stage(false, false), "failed");
+    }
+
+    #[test]
+    fn other_failures_keep_their_old_messages() {
+        let rejected = anyhow::Error::from(LlmError::Rejected("HTTP 400: model deactivated".into()));
+        assert!(!out_of_credit(&rejected));
+        assert_eq!(visitor_message(&rejected), "paper-bro hit a problem building this course.");
+        let unsupported = anyhow::Error::from(Unsupported("the paper's source has too many files".into()));
+        assert_eq!(visitor_message(&unsupported), "the paper's source has too many files");
     }
 }
