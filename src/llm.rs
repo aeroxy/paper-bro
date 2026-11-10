@@ -178,7 +178,7 @@ impl Llm {
                     last_err = e.context(format!("{} request failed", self.name));
                     backoff(attempt, None)
                 }
-                Ok(resp) if resp.status().is_success() => match read_stream(resp).await {
+                Ok(resp) if resp.status().is_success() => match read_stream(resp, req.affinity).await {
                     Ok(done) => return Ok(done),
                     // A call that reached the output limit is not asked again
                     // here: one that loops would loop again, at the full cost
@@ -250,7 +250,7 @@ fn error_text(body: &str) -> String {
     }
 }
 
-async fn read_stream(resp: reqwest::Response) -> Result<(String, Usage)> {
+async fn read_stream(resp: reqwest::Response, who: &str) -> Result<(String, Usage)> {
     let mut stream = resp.bytes_stream();
     let mut buf: Vec<u8> = Vec::new();
     let mut content = String::new();
@@ -307,11 +307,30 @@ async fn read_stream(resp: reqwest::Response) -> Result<(String, Usage)> {
     match finish.as_deref() {
         Some("stop") => {}
         // Thrown away, but written and billed: its cost goes with the error.
-        Some("length") => return Err(LlmError::Cut(used).into()),
+        Some("length") => {
+            log::warn!("{}", cut_off_note(who, &content, &used));
+            return Err(LlmError::Cut(used).into());
+        }
         Some(other) => bail!("stream finished with {other}"),
         None => bail!("stream ended before the answer finished"),
     }
     Ok((content, used))
+}
+
+/// What a call that reached the output limit was doing, for the log: how many
+/// tokens it wrote and how many of them were reasoning, how long its answer
+/// got, and how that answer ends, since a loop shows in its last words. `who`
+/// is the job it belongs to (the request's affinity). An answer of no
+/// characters means the loop was in the reasoning.
+fn cut_off_note(who: &str, content: &str, used: &Usage) -> String {
+    let tail: Vec<char> = content.chars().rev().take(160).collect();
+    let tail: String = tail.into_iter().rev().collect();
+    format!(
+        "[{who}] answer cut off at the output limit: {} tokens written, {} of them reasoning; the answer is {} characters and ends {tail:?}",
+        used.completion,
+        used.reasoning,
+        content.chars().count(),
+    )
 }
 
 /// Make a JSON schema strict-mode clean: every object closed and every
@@ -451,6 +470,20 @@ mod tests {
         let llm = Llm::new(&endpoint(serve(app).await), 1).unwrap();
         let err = llm.chat(&request(vec![])).await.unwrap_err();
         assert_eq!(err.to_string(), "model API rejected the request: stand-in HTTP 401: Webhook token not found: wk-x");
+    }
+
+    #[test]
+    fn a_cut_off_call_is_logged_with_its_tokens_and_how_its_answer_ends() {
+        let used = Usage { prompt: 1000, cached: 0, completion: 32768, reasoning: 30000, cost_usd: 0.14, calls: 1 };
+        let answer = format!("{{\"prose_html\": \"{}", "and so on ".repeat(40));
+        let note = cut_off_note("2610.26825", &answer, &used);
+        assert!(note.starts_with("[2610.26825] answer cut off at the output limit"), "{note}");
+        assert!(note.contains("32768 tokens written, 30000 of them reasoning"), "{note}");
+        assert!(note.contains(&format!("the answer is {} characters", answer.chars().count())), "{note}");
+        assert!(note.contains("and so on and so on"), "a loop shows in how the answer ends: {note}");
+        assert!(note.len() < 450, "one short line, not the whole answer: {} bytes", note.len());
+        // An empty answer says so: the loop was in the reasoning.
+        assert!(cut_off_note("x", "", &used).contains("the answer is 0 characters"));
     }
 
     #[tokio::test]
