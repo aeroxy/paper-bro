@@ -232,6 +232,24 @@ pub async fn finish_ready(
     Ok(())
 }
 
+/// Put a course back in the queue because the model provider is out of
+/// credit. That is not a failed try, so the attempt `claim` counted for it is
+/// given back: a course can wait for credit however long it takes and still
+/// have all its tries when the credit returns.
+pub async fn hold(pool: &PgPool, id: &str, error: &str, usage: &Value) -> Result<()> {
+    sqlx::query(
+        "UPDATE courses SET status = 'queued', error = $2, usage = $3, lease_until = NULL,
+                finished_at = NULL, attempts = GREATEST(attempts - 1, 0)
+         WHERE arxiv_id = $1",
+    )
+    .bind(id)
+    .bind(error)
+    .bind(usage)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Record a failure. `retry` puts it back in the queue for another attempt.
 pub async fn fail(pool: &PgPool, id: &str, error: &str, retry: bool, usage: &Value) -> Result<()> {
     sqlx::query(

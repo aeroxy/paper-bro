@@ -91,7 +91,12 @@ pub async fn process(app: &Arc<App>, id: &str) {
         let retry = budget || (!unsupported && attempts < MAX_ATTEMPTS);
         let shown = visitor_message(&e);
         log::error!("[{id}] attempt {attempts} failed: {e:#}");
-        let _ = db::fail(&app.pool, id, &shown, retry, &usage).await;
+        let _ = if budget {
+            // Waiting for credit is not a failed try; this gives the attempt back.
+            db::hold(&app.pool, id, &shown, &usage).await
+        } else {
+            db::fail(&app.pool, id, &shown, retry, &usage).await
+        };
         // The out-of-credit text already says it retries, and "shortly" would
         // be wrong: the worker sits out the next 15 minutes.
         let note = if retry && !budget { format!("{shown} Trying again shortly.") } else { shown };
