@@ -143,16 +143,18 @@ async fn read_off_thread<T: Send + 'static>(limit: Duration, work: impl FnOnce()
     }
 }
 
-/// A call the build can do without (the review, the quiz fix) failed. Out of
-/// credit is the exception: it holds the course like any other call would,
-/// because carrying on would publish the course unreviewed and say nothing.
-/// Anything else is logged and survived.
-fn survive(id: &str, what: &str, e: anyhow::Error) -> Result<()> {
+/// A call the build can do without failed: the review, the quiz fix, one
+/// lesson's repair. Out of credit is the exception: it holds the course like
+/// any other call would, because carrying on would publish the course
+/// unreviewed and say nothing. Anything else is survived, and the answer is
+/// the private note to leave (`Job::without`): what the course went without,
+/// and why. The log does not outlive a deploy, so the note is the only
+/// lasting record that a course went out unreviewed or with a lesson unfixed.
+fn survive(what: &str, e: anyhow::Error) -> Result<String> {
     if out_of_credit(&e) {
         return Err(e);
     }
-    log::warn!("[{id}] {what} failed, carrying on without it: {e:#}");
-    Ok(())
+    Ok(format!("{what} failed, and the course went on without it: {e:#}"))
 }
 
 /// The progress stage a failed attempt is reported under. The course page
@@ -265,6 +267,15 @@ impl Job {
                 Err(e)
             }
         }
+    }
+
+    /// Carry on without something that failed, if the build can (`survive`),
+    /// leaving a private note of it.
+    async fn without(&self, what: &str, e: anyhow::Error) -> Result<()> {
+        let note = survive(what, e)?;
+        log::warn!("[{}] {note}", self.id);
+        self.note(&note).await;
+        Ok(())
     }
 
     fn usage_json(&self) -> Value {
@@ -391,7 +402,7 @@ impl Job {
         let review = match self.review(&paper_msg, &outline, &lessons, &report).await {
             Ok(r) => Some(r),
             Err(e) => {
-                survive(&self.id, "the review", e)?;
+                self.without("the review", e).await?;
                 None
             }
         };
@@ -402,7 +413,7 @@ impl Job {
                     outline.quiz = q;
                     self.save("outline", &outline).await?;
                 }
-                Err(e) => survive(&self.id, "the quiz fix", e)?,
+                Err(e) => self.without("the quiz fix", e).await?,
             }
         }
         let mut problems = self.problems(&lessons, &report, review.as_ref(), &all);
@@ -414,24 +425,38 @@ impl Job {
             let which: Vec<usize> = problems.keys().copied().collect();
             let list = which.iter().map(|i| (i + 1).to_string()).collect::<Vec<_>>().join(", ");
             self.stage("repair", &format!("Fixing lesson {list} (round {round} of 2)")).await;
-            let fixed: Vec<Result<(usize, Lesson)>> = futures::stream::iter(which.clone())
+            let fixed: Vec<(usize, Result<Lesson>)> = futures::stream::iter(which.clone())
                 .map(|i| {
                     let (outline, paper_msg, lessons, problems) = (&outline, &paper_msg, &lessons, &problems);
                     async move {
-                        let l = self.write_lesson(paper_msg, outline, i, Some((&lessons[i], &problems[&i]))).await?;
-                        self.save(&format!("lesson:{:02}", i + 1), &l).await?;
-                        Ok((i, l))
+                        let rewrite = async {
+                            let l = self.write_lesson(paper_msg, outline, i, Some((&lessons[i], &problems[&i]))).await?;
+                            self.save(&format!("lesson:{:02}", i + 1), &l).await?;
+                            Ok(l)
+                        };
+                        (i, rewrite.await)
                     }
                 })
                 .buffered(6)
                 .collect()
                 .await;
-            for r in fixed {
-                let (i, l) = r?;
-                lessons[i] = l;
+            // A rewrite that fails must not cost the attempt: the retry would
+            // test and review the whole course again, and pay for the review
+            // again. The lesson stays as it was, and so does what was wrong
+            // with it, for the next round or the end of the rounds to deal with.
+            let mut unfixed = BTreeMap::new();
+            for (i, rewrite) in fixed {
+                match rewrite {
+                    Ok(l) => lessons[i] = l,
+                    Err(e) => {
+                        self.without(&format!("lesson {}'s repair", i + 1), e).await?;
+                        unfixed.insert(i, problems[&i].clone());
+                    }
+                }
             }
             last = self.qa(&meta, &outline, &lessons, &paper, &which).await?;
             problems = self.problems(&lessons, &last, None, &which);
+            problems.extend(unfixed);
         }
         // Whatever still fails in the browser ships without its lab; the
         // lesson's prose stays. Anything else left over is only logged.
@@ -808,11 +833,16 @@ mod tests {
     fn running_out_of_credit_in_a_call_the_build_can_skip_still_holds_the_course() {
         // The review and the quiz fix may fail without failing the build, but a 402
         // would otherwise let a course through unreviewed, with no credit message.
-        let credit = anyhow::Error::from(LlmError::Budget("out of credit".into())).context("review");
-        assert!(survive("2610.39393", "the review", credit).is_err());
-        let refused = anyhow::Error::from(LlmError::Rejected("HTTP 400".into()));
-        assert!(survive("2610.39393", "the review", refused).is_ok());
-        assert!(survive("2610.39393", "the quiz fix", anyhow::anyhow!("the model returned invalid JSON")).is_ok());
+        // Found through every layer of context a caller may have added.
+        let credit = anyhow::Error::from(LlmError::Budget("out of credit".into())).context("lesson 3").context("repair");
+        assert!(survive("the review", credit).is_err());
+        // Anything else is survived, and the note says what the course went without and why.
+        let refused = anyhow::Error::from(LlmError::Rejected("HTTP 400: no".into()));
+        assert_eq!(
+            survive("the review", refused).unwrap(),
+            "the review failed, and the course went on without it: model API rejected the request: HTTP 400: no"
+        );
+        assert!(survive("the quiz fix", anyhow::anyhow!("the model returned invalid JSON")).unwrap().starts_with("the quiz fix failed"));
     }
 
     #[test]
