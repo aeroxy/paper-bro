@@ -45,6 +45,13 @@ So the browser confines that code:
 `paper-bro qa-sample` shows a lab failing to read storage, cookies or the
 network from inside its iframe.
 
+The server reads untrusted files too. A paper is read as text when arXiv has
+its HTML version or its LaTeX source. One it has only as a PDF is read as
+pictures of its pages, and those are drawn by a separate process with a
+ceiling on its memory, a time limit and none of the server's environment, so
+a file that is slow or hungry to draw costs that process and not the server
+(`src/pdf.rs`).
+
 ## Local development
 
 ```sh
