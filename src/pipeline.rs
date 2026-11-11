@@ -109,6 +109,12 @@ pub async fn process(app: &Arc<App>, id: &str) {
     let _ = app.refresh(id).await;
 }
 
+/// What a visitor is told when an attempt fails for a reason that is ours and
+/// not the paper's. A course that failed with exactly these words is one a
+/// visitor may try again an hour later (`web::retry_opens`), so they are
+/// written once, here.
+pub const GENERIC_FAILURE: &str = "paper-bro hit a problem building this course.";
+
 /// What visitors see when the model provider says paper-bro's account is out
 /// of credit (a 402). The address is the donation page; the course page
 /// turns it into a link and its footer carries the same one
@@ -163,7 +169,7 @@ fn visitor_message(e: &anyhow::Error) -> String {
     } else if e.downcast_ref::<Unsupported>().is_some() {
         e.to_string()
     } else {
-        "paper-bro hit a problem building this course.".to_string()
+        GENERIC_FAILURE.to_string()
     }
 }
 

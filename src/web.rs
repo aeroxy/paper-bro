@@ -28,6 +28,7 @@ use crate::arxiv::{self, PaperId};
 use crate::config::BASE;
 use crate::db;
 use crate::github;
+use crate::pipeline::GENERIC_FAILURE;
 
 #[derive(RustEmbed)]
 #[folder = "frontend/dist"]
@@ -37,9 +38,6 @@ struct Assets;
 /// lab errors from their browsers, and internal build notes (cost, QA and
 /// review details). The admin listener shows them.
 pub const PRIVATE_STAGES: &[&str] = &["report", "visitor-error", "notes"];
-
-/// The message a retryable failure is stored with (see pipeline::process).
-const GENERIC_FAILURE: &str = "paper-bro hit a problem building this course.";
 
 type AppState = State<Arc<App>>;
 
