@@ -130,6 +130,23 @@ fn out_of_credit(e: &anyhow::Error) -> bool {
     matches!(e.downcast_ref::<LlmError>(), Some(LlmError::Budget(_)))
 }
 
+fn cut_off(e: &anyhow::Error) -> bool {
+    matches!(e.downcast_ref::<LlmError>(), Some(LlmError::Cut(_)))
+}
+
+/// Ask once more when an answer was cut off at the output limit. For a call
+/// the build survives without (`survive`), nothing else would ask again: a
+/// lesson that is cut off fails the attempt and is rewritten by the next,
+/// but a review that is cut off would just be skipped. Every cut-off seen so
+/// far was a loop that did not happen on the next try, so one more is worth
+/// its cost; a second cut-off is given up on.
+async fn again_if_cut<T, Fut: Future<Output = Result<T>>>(mut ask: impl FnMut() -> Fut) -> Result<T> {
+    match ask().await {
+        Err(e) if cut_off(&e) => ask().await,
+        answer => answer,
+    }
+}
+
 /// Read an untrusted file off the async threads, for at most `limit`. The
 /// work is CPU-bound (a PDF's pages are drawn here), so it runs on a blocking
 /// thread; a crash in it, or its taking too long, is a paper we can't read,
@@ -399,7 +416,7 @@ impl Job {
         let all = labs_to_test(&lessons);
         let report = self.qa(&meta, &outline, &lessons, &paper, &all).await?;
         self.stage("review", "A separate reviewer is checking the course against the paper").await;
-        let review = match self.review(&paper_msg, &outline, &lessons, &report).await {
+        let review = match again_if_cut(|| self.review(&paper_msg, &outline, &lessons, &report)).await {
             Ok(r) => Some(r),
             Err(e) => {
                 self.without("the review", e).await?;
@@ -827,6 +844,46 @@ mod tests {
         assert_eq!(read_off_thread(Duration::from_secs(5), || Ok(7)).await.unwrap(), 7);
         let refused = read_off_thread(Duration::from_secs(5), || -> Result<u8> { Err(Unsupported("too many pages".into()).into()) }).await;
         assert_eq!(unsupported(refused.unwrap_err()), "too many pages");
+    }
+
+    #[tokio::test]
+    async fn an_answer_that_is_cut_off_is_asked_for_once_more_and_no_more() {
+        use std::cell::Cell;
+        let cut = || anyhow::Error::from(LlmError::Cut(Usage::default())).context("review");
+        // Cut off, then fine: the second answer is the one.
+        let asked = Cell::new(0);
+        let answer = again_if_cut(|| {
+            asked.set(asked.get() + 1);
+            let n = asked.get();
+            async move { if n == 1 { Err(cut()) } else { Ok("reviewed") } }
+        })
+        .await;
+        assert_eq!((answer.unwrap(), asked.get()), ("reviewed", 2));
+        // Cut off twice: given up on, after exactly two asks.
+        let asked = Cell::new(0);
+        let answer: Result<()> = again_if_cut(|| {
+            asked.set(asked.get() + 1);
+            async move { Err(cut()) }
+        })
+        .await;
+        assert!(cut_off(&answer.unwrap_err()));
+        assert_eq!(asked.get(), 2);
+        // Any other failure is not asked about again, and neither is an answer.
+        let asked = Cell::new(0);
+        let answer: Result<()> = again_if_cut(|| {
+            asked.set(asked.get() + 1);
+            async move { Err(anyhow::Error::from(LlmError::Rejected("HTTP 400".into()))) }
+        })
+        .await;
+        assert!(answer.is_err());
+        assert_eq!(asked.get(), 1);
+        let asked = Cell::new(0);
+        let answer = again_if_cut(|| {
+            asked.set(asked.get() + 1);
+            async move { Ok(7) }
+        })
+        .await;
+        assert_eq!((answer.unwrap(), asked.get()), (7, 1));
     }
 
     #[test]
