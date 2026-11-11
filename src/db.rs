@@ -250,6 +250,18 @@ pub async fn hold(pool: &PgPool, id: &str, error: &str, usage: &Value) -> Result
     Ok(())
 }
 
+/// Stop a course that keeps being started without finishing or failing
+/// (pipeline::process). No attempt ran to report a cost, so what is stored
+/// stays.
+pub async fn give_up(pool: &PgPool, id: &str, error: &str) -> Result<()> {
+    sqlx::query("UPDATE courses SET status = 'failed', error = $2, lease_until = NULL, finished_at = now() WHERE arxiv_id = $1")
+        .bind(id)
+        .bind(error)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// Record a failure. `retry` puts it back in the queue for another attempt.
 pub async fn fail(pool: &PgPool, id: &str, error: &str, retry: bool, usage: &Value) -> Result<()> {
     sqlx::query(
