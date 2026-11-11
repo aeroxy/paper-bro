@@ -183,7 +183,7 @@ impl Llm {
                     // A call that reached the output limit is not asked again
                     // here: one that loops would loop again, at the full cost
                     // each time. The pipeline retries from its checkpoints.
-                    Err(e) if e.downcast_ref::<LlmError>().is_some() => return Err(e),
+                    Err(e) if matches!(e.downcast_ref::<LlmError>(), Some(LlmError::Cut(_))) => return Err(e),
                     Err(e) => {
                         last_err = e;
                         backoff(attempt, None)
