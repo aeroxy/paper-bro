@@ -9,6 +9,7 @@ mod db;
 mod github;
 mod ingest;
 mod llm;
+mod pdf;
 mod pipeline;
 mod qa;
 mod sample;
@@ -33,8 +34,16 @@ const USAGE: &str = "usage: paper-bro <command>
   qa-sample [nohang]  run browser QA on a hand-written course with broken labs
   migrate          apply database migrations";
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // The one command that runs before anything else is set up. It reads an
+    // untrusted file, so it gets no settings, no logger and no runtime (pdf.rs).
+    if std::env::args().nth(1).as_deref() == Some(pdf::COMMAND) {
+        return pdf::child();
+    }
+    tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(run())
+}
+
+async fn run() -> Result<()> {
     dotenvy::dotenv().ok();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info,chromiumoxide=off")).init();
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -374,7 +383,7 @@ async fn ingest_one(id: &str) -> Result<()> {
     let paper = match client.html(id, meta.version).await? {
         Some((url, html)) => ingest::from_latexml(&url, &html)?,
         None => match client.eprint(id, meta.version).await? {
-            Some(bytes) => ingest::from_eprint(&bytes)?,
+            Some(bytes) => pipeline::read_eprint(bytes).await?,
             None => bail!("no source"),
         },
     };

@@ -27,6 +27,7 @@ use crate::db;
 use crate::github;
 use crate::ingest::{self, Paper, Unsupported};
 use crate::llm::{LlmError, Request, Usage};
+use crate::pdf;
 use crate::qa;
 use crate::telegram;
 
@@ -49,9 +50,10 @@ const MAX_ATTEMPTS: i32 = 3;
 /// The wait holds a worker, so this is as long as it is worth.
 const PAGE_POLL: Duration = Duration::from_secs(5);
 const PAGE_TRIES: u32 = 180;
-/// How long reading a paper's source may take once it is downloaded. Real
-/// papers take a second or two, a PDF's pages included; a file that takes
-/// longer than this is one we can't read, and must not hold a worker.
+/// How long reading a paper's source archive may take once it is downloaded.
+/// Real ones take a moment; one that takes longer than this is a paper we
+/// can't read, and must not hold a worker. A PDF has a limit of its own
+/// (pdf.rs).
 const SOURCE_LIMIT: Duration = Duration::from_secs(120);
 
 pub async fn worker(app: Arc<App>, n: usize) {
@@ -148,8 +150,8 @@ async fn again_if_cut<T, Fut: Future<Output = Result<T>>>(mut ask: impl FnMut() 
 }
 
 /// Read an untrusted file off the async threads, for at most `limit`. The
-/// work is CPU-bound (a PDF's pages are drawn here), so it runs on a blocking
-/// thread; a crash in it, or its taking too long, is a paper we can't read,
+/// work is CPU-bound (a source archive is unpacked and its files joined), so
+/// it runs on a blocking thread; a crash in it, or its taking too long, is a paper we can't read,
 /// not a failure worth retrying. A thread that runs over cannot be stopped
 /// and goes on until it ends, but the job is told and its worker is free.
 async fn read_off_thread<T: Send + 'static>(limit: Duration, work: impl FnOnce() -> Result<T> + Send + 'static) -> Result<T> {
@@ -158,6 +160,16 @@ async fn read_off_thread<T: Send + 'static>(limit: Duration, work: impl FnOnce()
         Ok(Err(_)) => Err(Unsupported("paper-bro couldn't read this paper's source".into()).into()),
         Ok(Ok(read)) => read,
     }
+}
+
+/// Turn a downloaded e-print into a paper. A PDF's pages are drawn in a
+/// process of their own (pdf.rs); a source archive is read here, off the
+/// async threads.
+pub async fn read_eprint(bytes: Vec<u8>) -> Result<Paper> {
+    if pdf::is_pdf(&bytes) {
+        return Ok(ingest::from_pages(pdf::draw_boxed(&bytes).await?));
+    }
+    read_off_thread(SOURCE_LIMIT, move || ingest::from_eprint(&bytes)).await
 }
 
 /// A call the build can do without failed: the review, the quiz fix, one
@@ -221,7 +233,7 @@ fn banned(lesson: &Lesson) -> Vec<String> {
 /// The message every call of a build starts with: the paper between the
 /// markers the system prompt names. For an HTML or LaTeX paper it is text, and
 /// its bytes are the cached prompt prefix, so they must not change. For a PDF
-/// it is the same markers around the drawn pages (`ingest::render_pdf`), each
+/// it is the same markers around the drawn pages (pdf.rs), each
 /// an image after a label, in order: not a PDF attachment, which the model
 /// server reads only 20 pages of.
 fn paper_message(meta: &Meta, paper: &Paper) -> Value {
@@ -347,7 +359,7 @@ impl Job {
                 let paper = match app.arxiv.html(&meta.id, meta.version).await? {
                     Some((url, html)) => ingest::from_latexml(&url, &html)?,
                     None => match app.arxiv.eprint(&meta.id, meta.version).await? {
-                        Some(bytes) => read_off_thread(SOURCE_LIMIT, move || ingest::from_eprint(&bytes)).await?,
+                        Some(bytes) => read_eprint(bytes).await?,
                         None => return Err(Unsupported("arXiv has no readable version of this paper".into()).into()),
                     },
                 };

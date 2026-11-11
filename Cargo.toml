@@ -33,6 +33,11 @@ sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio
 tar = "0.4.46"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "signal", "sync", "time", "process", "fs"] }
 
+# The ceiling on the memory of the process that draws a PDF (src/pdf.rs).
+# Only Linux, where the server runs, enforces one.
+[target.'cfg(target_os = "linux")'.dependencies]
+rlimit = "0.11"
+
 # Build scripts and proc macros only; the binary is stripped as before. On
 # macOS 27.2 the loader rejects stripped sqlx-macros ("mis-aligned LINKEDIT
 # string pool"), and rustc then reports it as "can't find crate for `sqlx`".
