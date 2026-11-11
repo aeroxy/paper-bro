@@ -47,8 +47,9 @@ pub const COMMAND: &str = "draw-pdf";
 const MAX_PDF: usize = 25 * 1024 * 1024;
 /// The most pages of a PDF taken. Like `ingest::MAX_CHARS`, a longer paper is
 /// rejected rather than half-read. At about 1,300 tokens a page this is
-/// about 80K tokens a call, cached after the first.
-const MAX_PAGES: usize = 60;
+/// about 130K tokens a call, cached after the first; a hundred pages were
+/// read in one request.
+const MAX_PAGES: usize = 100;
 /// How wide a drawn page is, in pixels: about 100 dpi for A4, and about 1,300
 /// tokens a page for the model, whatever the paper size.
 const PAGE_WIDE_PX: f32 = 833.0;
@@ -56,8 +57,9 @@ const PAGE_WIDE_PX: f32 = 833.0;
 /// so it cannot cost, or weigh, an absurd amount.
 const PAGE_HIGH_PX: f32 = 1400.0;
 /// The most the drawn pages may weigh together as PNG, since they ride in
-/// every call of a build and the server holds them for each. Tried up to
-/// this: 60 dense pages, a 28 MB request.
+/// every call of a build and the server holds them for each. A hundred
+/// ordinary pages come to about 18 MB. A hundred pages dense with figures do
+/// not fit, and that paper is refused. Tried up to this, a 28 MB request.
 const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 /// The memory the drawing process may have (its address space). Real papers
 /// needed 17 to 65 MB.
