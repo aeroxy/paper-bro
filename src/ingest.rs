@@ -36,8 +36,8 @@ use std::sync::LazyLock;
 
 /// About 300K tokens. Longer papers are rejected rather than half-read.
 pub const MAX_CHARS: usize = 1_000_000;
-/// The largest PDF file drawn: a bound on the memory and time spent on an
-/// untrusted file.
+/// The largest PDF file taken. It bounds what is downloaded and held, not
+/// what drawing it costs; the pipeline bounds the time that may take.
 pub const MAX_PDF: usize = 25 * 1024 * 1024;
 /// The most pages of a PDF taken. Like `MAX_CHARS`, a longer paper is
 /// rejected rather than half-read. At about 1,300 tokens a page this is
@@ -259,7 +259,7 @@ const MAX_ENTRIES: usize = 2_000;
 /// wide (shorter if that would pass `PAGE_HIGH_PX` tall). A PDF that can't be
 /// read, has too many pages, or draws to too much data is `Unsupported`. The
 /// file is untrusted, so a panic while drawing it is caught and told the same
-/// way, and the pipeline calls this off its async threads.
+/// way, and the pipeline calls this off its async threads, with a time limit.
 fn render_pdf(bytes: &[u8]) -> Result<Vec<String>> {
     let cant = |why: &str| Unsupported(format!("this paper was submitted as a PDF only, and {why}, which paper-bro can't read yet"));
     std::panic::catch_unwind(|| -> Result<Vec<String>> {

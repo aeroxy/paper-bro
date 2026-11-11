@@ -49,6 +49,10 @@ const MAX_ATTEMPTS: i32 = 3;
 /// The wait holds a worker, so this is as long as it is worth.
 const PAGE_POLL: Duration = Duration::from_secs(5);
 const PAGE_TRIES: u32 = 180;
+/// How long reading a paper's source may take once it is downloaded. Real
+/// papers take a second or two, a PDF's pages included; a file that takes
+/// longer than this is one we can't read, and must not hold a worker.
+const SOURCE_LIMIT: Duration = Duration::from_secs(120);
 
 pub async fn worker(app: Arc<App>, n: usize) {
     log::info!("worker {n} up");
@@ -113,6 +117,19 @@ const OUT_OF_CREDIT: &str = "paper-bro has run out of model credit, so this cour
 
 fn out_of_credit(e: &anyhow::Error) -> bool {
     matches!(e.downcast_ref::<LlmError>(), Some(LlmError::Budget(_)))
+}
+
+/// Read an untrusted file off the async threads, for at most `limit`. The
+/// work is CPU-bound (a PDF's pages are drawn here), so it runs on a blocking
+/// thread; a crash in it, or its taking too long, is a paper we can't read,
+/// not a failure worth retrying. A thread that runs over cannot be stopped
+/// and goes on until it ends, but the job is told and its worker is free.
+async fn read_off_thread<T: Send + 'static>(limit: Duration, work: impl FnOnce() -> Result<T> + Send + 'static) -> Result<T> {
+    match tokio::time::timeout(limit, tokio::task::spawn_blocking(work)).await {
+        Err(_) => Err(Unsupported("this paper's source took too long to read".into()).into()),
+        Ok(Err(_)) => Err(Unsupported("paper-bro couldn't read this paper's source".into()).into()),
+        Ok(Ok(read)) => read,
+    }
 }
 
 /// A call the build can do without (the review, the quiz fix) failed. Out of
@@ -291,11 +308,7 @@ impl Job {
                 let paper = match app.arxiv.html(&meta.id, meta.version).await? {
                     Some((url, html)) => ingest::from_latexml(&url, &html)?,
                     None => match app.arxiv.eprint(&meta.id, meta.version).await? {
-                        // CPU work on an untrusted file (a PDF is drawn here): off
-                        // the async threads, and a crash in it is a paper we can't read.
-                        Some(bytes) => tokio::task::spawn_blocking(move || ingest::from_eprint(&bytes))
-                            .await
-                            .map_err(|_| Unsupported("paper-bro couldn't read this paper's source".into()))??,
+                        Some(bytes) => read_off_thread(SOURCE_LIMIT, move || ingest::from_eprint(&bytes)).await?,
                         None => return Err(Unsupported("arXiv has no readable version of this paper".into()).into()),
                     },
                 };
@@ -757,6 +770,27 @@ mod tests {
         assert_eq!(failure_stage(true, true), "credit");
         assert_eq!(failure_stage(true, false), "retrying");
         assert_eq!(failure_stage(false, false), "failed");
+    }
+
+    #[tokio::test]
+    async fn a_source_that_takes_too_long_or_crashes_is_a_paper_we_cannot_read() {
+        let unsupported = |e: anyhow::Error| e.downcast_ref::<Unsupported>().map(|u| u.0.clone()).expect("unsupported, so not retried");
+        // Slower than its limit: given up on, and the caller is not kept waiting for it.
+        let started = std::time::Instant::now();
+        let slow = read_off_thread(Duration::from_millis(30), || {
+            std::thread::sleep(Duration::from_millis(600));
+            Ok(1)
+        })
+        .await;
+        assert_eq!(unsupported(slow.unwrap_err()), "this paper's source took too long to read");
+        assert!(started.elapsed() < Duration::from_millis(400), "{:?}", started.elapsed());
+        // A crash in it is told the same way, and doesn't take the caller down.
+        let crashed = read_off_thread(Duration::from_secs(5), || -> Result<u8> { panic!("a bug in a parser") }).await;
+        assert_eq!(unsupported(crashed.unwrap_err()), "paper-bro couldn't read this paper's source");
+        // In time: its answer, or its own error, comes through as it is.
+        assert_eq!(read_off_thread(Duration::from_secs(5), || Ok(7)).await.unwrap(), 7);
+        let refused = read_off_thread(Duration::from_secs(5), || -> Result<u8> { Err(Unsupported("too many pages".into()).into()) }).await;
+        assert_eq!(unsupported(refused.unwrap_err()), "too many pages");
     }
 
     #[test]
