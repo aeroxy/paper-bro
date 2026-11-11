@@ -73,6 +73,18 @@ pub async fn worker(app: Arc<App>, n: usize) {
 
 pub async fn process(app: &Arc<App>, id: &str) {
     let _ = app.refresh(id).await;
+    // Every start is counted when the course is claimed, and a failure is
+    // final at the third. A course started a fourth time never got that far:
+    // each start was cut off, by deploys or because building it takes the
+    // server down with it. It is not started again by itself.
+    let starts = db::attempts(&app.pool, id).await.unwrap_or(0);
+    if started_too_often(starts) {
+        log::error!("[{id}] started {starts} times without finishing or failing: giving up on it");
+        let _ = db::give_up(&app.pool, id, STARTED_TOO_OFTEN).await;
+        app.emit(id, "failed", STARTED_TOO_OFTEN).await;
+        let _ = app.refresh(id).await;
+        return;
+    }
     let hb = {
         let (app, id) = (app.clone(), id.to_string());
         tokio::spawn(async move {
@@ -121,6 +133,15 @@ pub async fn process(app: &Arc<App>, id: &str) {
 /// visitor may try again an hour later (`web::retry_opens`), so they are
 /// written once, here.
 pub const GENERIC_FAILURE: &str = "paper-bro hit a problem building this course.";
+
+/// What a visitor is told about a course that `process` will not start
+/// again. Not the generic failure, which any visitor may try again in an
+/// hour: this one needs a person to look first.
+const STARTED_TOO_OFTEN: &str = "paper-bro couldn't finish this course after several tries, and has stopped trying.";
+
+fn started_too_often(starts: i32) -> bool {
+    starts > MAX_ATTEMPTS
+}
 
 /// What visitors see when the model provider says paper-bro's account is out
 /// of credit (a 402). The address is the donation page; the course page
@@ -896,6 +917,16 @@ mod tests {
         })
         .await;
         assert_eq!((answer.unwrap(), asked.get()), (7, 1));
+    }
+
+    #[test]
+    fn a_course_is_started_three_times_and_not_a_fourth() {
+        // A claim counts the start before the build runs, so the first is 1.
+        assert!(!started_too_often(1));
+        assert!(!started_too_often(MAX_ATTEMPTS));
+        assert!(started_too_often(MAX_ATTEMPTS + 1));
+        // A visitor may try a generic failure again; this one they may not.
+        assert_ne!(STARTED_TOO_OFTEN, GENERIC_FAILURE);
     }
 
     #[test]
