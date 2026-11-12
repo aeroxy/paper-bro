@@ -33,10 +33,8 @@ export function Shell({ children }: { children: ReactNode }) {
       <main className="relative z-10 mx-auto max-w-[1100px] px-4 pb-20 sm:px-6">{children}</main>
       <footer className="relative z-10 pb-12 text-center text-[13px] text-fg-3">
         Courses are written by an AI model from the paper and hosted on{' '}
-        <a className="text-fg-2 underline-offset-2 hover:underline" href="https://github.com/paper-bro/paper-bro.github.io">GitHub Pages</a>. Papers come from{' '}
-        <a className="text-fg-2 underline-offset-2 hover:underline" href="https://arxiv.org">arXiv</a>; paper-bro isn't affiliated with it.
-        Writing courses costs real money, so if paper-bro is useful to you, you can{' '}
-        <a className="text-fg-2 underline-offset-2 hover:underline" href={DONATE} target="_blank" rel="noopener">chip in</a>.
+        <a className="text-fg-2 underline-offset-2 hover:underline" href="https://github.com/paper-bro/paper-bro.github.io">GitHub Pages</a>. Writing courses costs real money, so if paper-bro is useful to you, you can{' '}
+        <a className="text-action underline-offset-2 hover:text-action-700 hover:underline" href={DONATE} target="_blank" rel="noopener">chip in</a>.
       </footer>
     </>
   )
