@@ -197,6 +197,17 @@ pub async fn read_eprint(bytes: Vec<u8>, pdfs: PdfSettings) -> Result<Paper> {
     read_off_thread(SOURCE_LIMIT, move || ingest::from_eprint(&bytes)).await
 }
 
+/// A PDF paper's pages against the current limit. One read under a higher
+/// limit comes back from its checkpoint when a build resumes, and is held to
+/// the limit the same as a paper read now.
+fn check_pages(paper: &Paper, max_pages: usize) -> Result<()> {
+    let pages = paper.pdf.as_ref().map_or(paper.pages.len(), |pdf| pdf.pages);
+    if pages > max_pages {
+        return Err(pdf::too_many_pages(max_pages).into());
+    }
+    Ok(())
+}
+
 /// A call the build can do without failed: the review, the quiz fix, one
 /// lesson's repair. Out of credit is the exception: it holds the course like
 /// any other call would, because carrying on would publish the course
@@ -408,6 +419,7 @@ impl Job {
                 paper
             }
         };
+        check_pages(&paper, app.cfg.pdf.max_pages)?;
         let paper_msg = paper_message(&meta, &paper);
 
         // 2. Plan.
@@ -852,6 +864,21 @@ mod tests {
         assert_eq!(parts[3], json!({"type": "text", "text": "[page 2]"}));
         assert_eq!(parts[4], json!({"type": "image_url", "image_url": {"url": "data:image/png;base64,REVG"}}));
         assert_eq!(parts[5], json!({"type": "text", "text": "END PAPER>>>"}));
+    }
+
+    #[test]
+    fn a_stored_pdf_paper_is_held_to_the_page_limit_of_now() {
+        let refusal = |e: anyhow::Error| e.downcast_ref::<Unsupported>().map(|u| u.0.clone()).expect("unsupported, so not retried");
+        // Read when the limit was higher, as pictures or whole.
+        let drawn = ingest::from_pages(vec!["QUJD".into(); 3]);
+        assert!(refusal(check_pages(&drawn, 2).unwrap_err()).contains("more than 2 pages"));
+        assert!(check_pages(&drawn, 3).is_ok());
+        let whole = ingest::from_pdf(b"%PDF-1.7", 80);
+        assert!(refusal(check_pages(&whole, 10).unwrap_err()).contains("more than 10 pages"));
+        assert!(check_pages(&whole, 100).is_ok());
+        // A text paper has no pages to count.
+        let text = Paper { kind: "html".into(), text: "x".into(), figures: vec![], pages: vec![], pdf: None };
+        assert!(check_pages(&text, 1).is_ok());
     }
 
     #[test]

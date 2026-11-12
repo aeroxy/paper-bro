@@ -97,9 +97,14 @@ fn open(bytes: &[u8], max_pages: usize) -> Result<Pdf, Unsupported> {
         return Err(cant("its PDF has no pages"));
     }
     if pages > max_pages {
-        return Err(cant(&format!("its PDF has more than {max_pages} pages")));
+        return Err(too_many_pages(max_pages));
     }
     Ok(pdf)
+}
+
+/// Why a PDF over the page limit is refused, wherever that is found.
+pub fn too_many_pages(max_pages: usize) -> Unsupported {
+    cant(&format!("its PDF has more than {max_pages} pages"))
 }
 
 /// Draw every page of a PDF to a PNG, base64, in order, each `PAGE_WIDE_PX`
