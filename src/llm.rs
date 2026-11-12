@@ -103,6 +103,11 @@ pub enum LlmError {
     /// were written and billed all the same, so what the call cost rides with
     /// the error, for the caller to count (`spent`).
     Cut(Usage),
+    /// The server ended the answer for a reason of its own, neither finishing
+    /// it nor reaching the limit: a blocked prompt, a filtered answer. The
+    /// same request would most likely end the same way, so it is not asked
+    /// again here, and its tokens were billed all the same, like `Cut`'s.
+    Refused(String, Usage),
 }
 impl std::fmt::Display for LlmError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -110,6 +115,7 @@ impl std::fmt::Display for LlmError {
             Self::Budget(m) => write!(f, "model API budget exhausted: {m}"),
             Self::Rejected(m) => write!(f, "model API rejected the request: {m}"),
             Self::Cut(_) => write!(f, "the answer hit the output limit (asked for at most {MAX_OUTPUT_TOKENS} tokens)"),
+            Self::Refused(why, _) => write!(f, "the model API declined to answer: {why}"),
         }
     }
 }
@@ -117,7 +123,7 @@ impl LlmError {
     /// What a failed call cost anyway, when it is known.
     pub fn spent(&self) -> Option<Usage> {
         match self {
-            Self::Cut(used) => Some(*used),
+            Self::Cut(used) | Self::Refused(_, used) => Some(*used),
             _ => None,
         }
     }
@@ -186,8 +192,9 @@ impl Llm {
                     Ok(done) => return Ok(done),
                     // A call that reached the output limit is not asked again
                     // here: one that loops would loop again, at the full cost
-                    // each time. The pipeline retries from its checkpoints.
-                    Err(e) if matches!(e.downcast_ref::<LlmError>(), Some(LlmError::Cut(_))) => return Err(e),
+                    // each time. Nor one the server declined to answer. The
+                    // pipeline retries from its checkpoints.
+                    Err(e) if matches!(e.downcast_ref::<LlmError>(), Some(LlmError::Cut(_) | LlmError::Refused(..))) => return Err(e),
                     Err(e) => {
                         last_err = e;
                         backoff(attempt, None)
@@ -364,7 +371,7 @@ async fn read_stream(resp: reqwest::Response, api: Api, who: &str) -> Result<(St
             log::warn!("{}", cut_off_note(who, &said.content, &used));
             return Err(LlmError::Cut(used).into());
         }
-        Some(other) => bail!("stream finished with {other}"),
+        Some(other) => return Err(LlmError::Refused(other.to_string(), used).into()),
         None => bail!("stream ended before the answer finished"),
     }
     Ok((said.content, used))
@@ -800,6 +807,32 @@ mod tests {
         let Some(LlmError::Cut(used)) = err.downcast_ref::<LlmError>() else { panic!("{err:#}") };
         assert_eq!((used.prompt, used.completion, used.reasoning), (151, 32768, 32765));
         assert_eq!(asked.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_answer_the_server_declines_is_not_asked_again_and_its_tokens_are_counted() {
+        let blocked_prompt = concat!(
+            r#"data: {"promptFeedback": {"blockReason": "PROHIBITED_CONTENT"}, "usageMetadata": {"promptTokenCount": 38116}}"#,
+            "\n\n",
+        );
+        let filtered_answer = concat!(
+            r#"data: {"candidates": [{"content": {"parts": [{"text": "partial"}], "role": "model"}, "finishReason": "SAFETY"}], "#,
+            r#""usageMetadata": {"promptTokenCount": 151, "candidatesTokenCount": 12, "thoughtsTokenCount": 300}}"#,
+            "\n\n",
+        );
+        for (stream, why, prompt, completion) in [(blocked_prompt, "a blocked prompt (PROHIBITED_CONTENT)", 38116, 0), (filtered_answer, "SAFETY", 151, 312)] {
+            let (endpoint, asked) = gemini_stand_in(stream).await;
+            let llm = Llm::new(&endpoint, 1).unwrap();
+            let err = llm.chat(&request(vec![json!({"role": "user", "content": "hi"})])).await.unwrap_err();
+            let Some(LlmError::Refused(said, used)) = err.downcast_ref::<LlmError>() else { panic!("{err:#}") };
+            assert_eq!(said, why);
+            assert!(err.to_string().contains(why), "{err}");
+            // Billed all the same, so counted, as a cut-off answer is.
+            assert_eq!((used.prompt, used.completion, used.calls), (prompt, completion, 1));
+            assert_eq!(err.downcast_ref::<LlmError>().and_then(LlmError::spent).map(|u| u.prompt), Some(prompt));
+            // The same request would be declined again.
+            assert_eq!(asked.lock().unwrap().len(), 1, "{why}");
+        }
     }
 
     #[test]
