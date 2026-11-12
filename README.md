@@ -50,7 +50,8 @@ its HTML version or its LaTeX source. One it has only as a PDF is read as
 pictures of its pages, and those are drawn by a separate process with a
 ceiling on its memory, a time limit and none of the server's environment, so
 a file that is slow or hungry to draw costs that process and not the server
-(`src/pdf.rs`).
+(`src/pdf.rs`). With `PDF_INPUT=file` the PDF goes to the model as it is,
+and the same process only opens it to count its pages.
 
 ## Local development
 
@@ -111,12 +112,16 @@ paper-bro is one binary plus a headless Chromium, and runs on any Linux host:
    App's private key where `GH_APP_KEY_PATH` points (readable by paper-bro
    only). The App needs `contents: write` on `GH_REPO`. The model API is
    whatever OpenAI-compatible server `LLM_BASE_URL` (up to `/v1`), `LLM_MODEL`
-   and, if it wants one, `LLM_API_KEY` point at. It must stream usage and
-   support strict `json_schema` output. Costs are counted at Muse Spark Open's
-   list price whatever the server, so set `DAILY_BUDGET_USD` to suit. The key
-   travels as a bearer token, so use `https` unless the server is on this
-   machine or a network you trust; paper-bro warns at startup if it would go
-   over plain http to another host.
+   and, if it wants one, `LLM_API_KEY` point at, or with `LLM_API=gemini` one
+   that speaks Google's Gemini API (`LLM_BASE_URL` up to `/v1beta`). It must
+   stream usage and support strict JSON output. Costs are counted at Muse
+   Spark Open's list price whatever the server, so set `DAILY_BUDGET_USD` to
+   suit. The key travels with every call, so use `https` unless the server is
+   on this machine or a network you trust; paper-bro warns at startup if it
+   would go over plain http to another host. A paper that arXiv has only as a
+   PDF goes to the model as pictures of its pages, or with `PDF_INPUT=file` as
+   the PDF itself, for a model that reads a whole one (Gemini does);
+   `PDF_MAX_PAGES` (default 100) is the most pages taken.
 4. **Run** `paper-bro serve` under whatever supervises processes on your
    host: systemd, a container, or nohup.
 5. **Route** `/paper-bro*` on the public origin to `LISTEN`, without stripping

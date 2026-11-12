@@ -22,6 +22,7 @@ use std::time::Duration;
 
 use crate::app::App;
 use crate::arxiv::{self, Meta};
+use crate::config::{PdfInput, PdfSettings};
 use crate::course::{self, Course, Lesson, Outline, QuizItem, Review};
 use crate::db;
 use crate::github;
@@ -183,12 +184,15 @@ async fn read_off_thread<T: Send + 'static>(limit: Duration, work: impl FnOnce()
     }
 }
 
-/// Turn a downloaded e-print into a paper. A PDF's pages are drawn in a
-/// process of their own (pdf.rs); a source archive is read here, off the
-/// async threads.
-pub async fn read_eprint(bytes: Vec<u8>) -> Result<Paper> {
+/// Turn a downloaded e-print into a paper. A PDF's pages are drawn, or only
+/// counted when the PDF is sent whole, in a process of their own (pdf.rs); a
+/// source archive is read here, off the async threads.
+pub async fn read_eprint(bytes: Vec<u8>, pdfs: PdfSettings) -> Result<Paper> {
     if pdf::is_pdf(&bytes) {
-        return Ok(ingest::from_pages(pdf::draw_boxed(&bytes).await?));
+        return Ok(match pdfs.input {
+            PdfInput::Images => ingest::from_pages(pdf::draw_boxed(&bytes, pdfs.max_pages).await?),
+            PdfInput::File => ingest::from_pdf(&bytes, pdf::count_boxed(&bytes, pdfs.max_pages).await?),
+        });
     }
     read_off_thread(SOURCE_LIMIT, move || ingest::from_eprint(&bytes)).await
 }
@@ -254,9 +258,9 @@ fn banned(lesson: &Lesson) -> Vec<String> {
 /// The message every call of a build starts with: the paper between the
 /// markers the system prompt names. For an HTML or LaTeX paper it is text, and
 /// its bytes are the cached prompt prefix, so they must not change. For a PDF
-/// it is the same markers around the drawn pages (pdf.rs), each
-/// an image after a label, in order: not a PDF attachment, which the model
-/// server reads only 20 pages of.
+/// it is the same markers around the drawn pages (pdf.rs), each an image
+/// after a label, in order; or around the PDF itself, attached as a file,
+/// when `PDF_INPUT=file` (a server may read only part of one; pdf.rs).
 fn paper_message(meta: &Meta, paper: &Paper) -> Value {
     let figures = if paper.figures.is_empty() {
         "This paper has no figures that can be shown.".to_string()
@@ -264,10 +268,11 @@ fn paper_message(meta: &Meta, paper: &Paper) -> Value {
         let list: Vec<String> = paper.figures.iter().map(|f| format!("- {}: {}", f.key, f.caption)).collect();
         format!("Figures that can be shown in a lesson (key: caption):\n{}", list.join("\n"))
     };
-    let kind = match (paper.kind.as_str(), paper.pages.len()) {
-        ("html", _) => "arXiv's HTML rendering, converted to text with $math$".to_string(),
-        (_, 0) => "the LaTeX source".to_string(),
-        (_, n) => format!("the paper's PDF, all {n} pages, attached below as images in order, each after a label \"[page k]\""),
+    let kind = match (paper.kind.as_str(), paper.pages.len(), &paper.pdf) {
+        ("html", ..) => "arXiv's HTML rendering, converted to text with $math$".to_string(),
+        (_, _, Some(pdf)) => format!("the paper's PDF, all {} pages, attached below", pdf.pages),
+        (_, 0, None) => "the LaTeX source".to_string(),
+        (_, n, None) => format!("the paper's PDF, all {n} pages, attached below as images in order, each after a label \"[page k]\""),
     };
     let head = format!(
         "<<<PAPER arXiv:{id} version {v}\nTitle: {title}\nAuthors: {authors}\nSource: {kind}\n\n{figures}\n\n",
@@ -276,6 +281,14 @@ fn paper_message(meta: &Meta, paper: &Paper) -> Value {
         title = meta.title,
         authors = meta.authors.join(", "),
     );
+    if let Some(pdf) = &paper.pdf {
+        let file = json!({"filename": format!("{}.pdf", arxiv::alias(&meta.id)), "file_data": format!("data:application/pdf;base64,{}", pdf.base64)});
+        return json!([
+            {"type": "text", "text": head},
+            {"type": "file", "file": file},
+            {"type": "text", "text": "END PAPER>>>"},
+        ]);
+    }
     if paper.pages.is_empty() {
         return json!(format!("{head}{}\nEND PAPER>>>", paper.text));
     }
@@ -380,13 +393,16 @@ impl Job {
                 let paper = match app.arxiv.html(&meta.id, meta.version).await? {
                     Some((url, html)) => ingest::from_latexml(&url, &html)?,
                     None => match app.arxiv.eprint(&meta.id, meta.version).await? {
-                        Some(bytes) => read_eprint(bytes).await?,
+                        Some(bytes) => read_eprint(bytes, app.cfg.pdf).await?,
                         None => return Err(Unsupported("arXiv has no readable version of this paper".into()).into()),
                     },
                 };
                 db::set_source_kind(&app.pool, &self.id, &paper.kind).await?;
                 if !paper.pages.is_empty() {
                     self.note(&format!("the paper is a PDF only: the model reads its {} pages as images", paper.pages.len())).await;
+                }
+                if let Some(pdf) = &paper.pdf {
+                    self.note(&format!("the paper is a PDF only: the model reads the PDF itself, all {} pages", pdf.pages)).await;
                 }
                 self.save("paper", &paper).await?;
                 paper
@@ -811,7 +827,7 @@ mod tests {
     #[test]
     fn a_text_papers_message_keeps_its_exact_text() {
         // These bytes are the cached prompt prefix of every call: changing them costs money.
-        let paper = Paper { kind: "latex".into(), text: "\\section{Intro}".into(), figures: vec![], pages: vec![] };
+        let paper = Paper { kind: "latex".into(), text: "\\section{Intro}".into(), figures: vec![], pages: vec![], pdf: None };
         assert_eq!(
             paper_message(&meta(), &paper),
             json!("<<<PAPER arXiv:2610.39393 version 1\nTitle: A Title\nAuthors: A. Author, B. Author\nSource: the LaTeX source\n\nThis paper has no figures that can be shown.\n\n\\section{Intro}\nEND PAPER>>>")
@@ -820,7 +836,7 @@ mod tests {
 
     #[test]
     fn a_pdf_paper_goes_in_as_every_page_image_in_order_between_the_markers() {
-        let paper = Paper { kind: "pdf".into(), text: String::new(), figures: vec![], pages: vec!["QUJD".into(), "REVG".into()] };
+        let paper = Paper { kind: "pdf".into(), text: String::new(), figures: vec![], pages: vec!["QUJD".into(), "REVG".into()], pdf: None };
         let msg = paper_message(&meta(), &paper);
         let parts = msg.as_array().expect("a PDF goes in as message parts, not one string");
         // head, then a label and an image per page, then the end marker
@@ -836,6 +852,20 @@ mod tests {
         assert_eq!(parts[3], json!({"type": "text", "text": "[page 2]"}));
         assert_eq!(parts[4], json!({"type": "image_url", "image_url": {"url": "data:image/png;base64,REVG"}}));
         assert_eq!(parts[5], json!({"type": "text", "text": "END PAPER>>>"}));
+    }
+
+    #[test]
+    fn a_pdf_sent_whole_goes_in_as_one_file_between_the_markers() {
+        let paper = ingest::from_pdf(b"%PDF-1.7", 38);
+        let msg = paper_message(&meta(), &paper);
+        let parts = msg.as_array().expect("message parts");
+        assert_eq!(parts.len(), 3, "the head, the file, the end marker: {msg}");
+        let head = parts[0]["text"].as_str().unwrap();
+        assert!(head.starts_with("<<<PAPER arXiv:2610.39393 version 1\n"), "{head}");
+        assert!(head.contains("Source: the paper's PDF, all 38 pages, attached below\n"), "{head}");
+        assert!(!head.contains("[page"), "no page labels when there are no pictures: {head}");
+        assert_eq!(parts[1], json!({"type": "file", "file": {"filename": "arxiv-2610-39393.pdf", "file_data": "data:application/pdf;base64,JVBERi0xLjc="}}));
+        assert_eq!(parts[2], json!({"type": "text", "text": "END PAPER>>>"}));
     }
 
     #[test]

@@ -11,7 +11,8 @@
 //!
 //! Last resort: a submission that is only a PDF has no text to read. Its
 //! pages are drawn into images, in a process of their own (pdf.rs), and the
-//! paper is those pages (`from_pages`).
+//! paper is those pages (`from_pages`); or with `PDF_INPUT=file` the paper is
+//! the PDF itself, for a model that reads one whole (`from_pdf`).
 
 use anyhow::{Result, bail};
 use ego_tree::NodeRef;
@@ -44,6 +45,18 @@ pub struct Paper {
     /// (pdf.rs). A paper stored before PDFs were read has none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pages: Vec<String>,
+    /// The PDF itself, when `kind` is `pdf` and it goes to the model whole
+    /// instead of as `pages`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pdf: Option<WholePdf>,
+}
+
+/// A PDF that goes to the model as it is.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WholePdf {
+    pub base64: String,
+    /// How many pages it has, which the paper's message names.
+    pub pages: usize,
 }
 
 /// A paper we can't read, as opposed to a failure worth retrying.
@@ -67,7 +80,7 @@ pub fn from_latexml(page_url: &str, html: &str) -> Result<Paper> {
     }
     let text = tidy(&w.out);
     check_size(&text)?;
-    Ok(Paper { kind: "html".into(), text, figures: w.figures, pages: Vec::new() })
+    Ok(Paper { kind: "html".into(), text, figures: w.figures, pages: Vec::new(), pdf: None })
 }
 
 struct Walker {
@@ -230,7 +243,15 @@ const MAX_ENTRIES: usize = 2_000;
 /// A paper that is only a PDF: its pages, drawn (pdf.rs). No text, and no
 /// figures a lesson can show.
 pub fn from_pages(pages: Vec<String>) -> Paper {
-    Paper { kind: "pdf".into(), text: String::new(), figures: Vec::new(), pages }
+    Paper { kind: "pdf".into(), text: String::new(), figures: Vec::new(), pages, pdf: None }
+}
+
+/// A paper that is only a PDF, sent to the model as it is: the file, and its
+/// page count (pdf.rs counted it). No text, and no figures either.
+pub fn from_pdf(bytes: &[u8], pages: usize) -> Paper {
+    use base64::Engine;
+    let pdf = WholePdf { base64: base64::prelude::BASE64_STANDARD.encode(bytes), pages };
+    Paper { kind: "pdf".into(), text: String::new(), figures: Vec::new(), pages: Vec::new(), pdf: Some(pdf) }
 }
 
 /// A paper from its LaTeX source, as arXiv's e-print endpoint gives it: a
@@ -292,7 +313,7 @@ pub fn from_eprint(bytes: &[u8]) -> Result<Paper> {
     };
     let text = tidy(&inline(&files, &main, 0));
     check_size(&text)?;
-    Ok(Paper { kind: "latex".into(), text, figures: Vec::new(), pages: Vec::new() })
+    Ok(Paper { kind: "latex".into(), text, figures: Vec::new(), pages: Vec::new(), pdf: None })
 }
 
 static TEX_COMMAND: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\[a-zA-Z]{2,}").unwrap());
@@ -403,8 +424,19 @@ mod tests {
     #[test]
     fn a_paper_stored_before_pdfs_were_read_still_loads() {
         let p: Paper = serde_json::from_str(r#"{"kind":"latex","text":"x","figures":[]}"#).unwrap();
-        assert!(p.pages.is_empty());
-        // And a text paper doesn't gain a `pages` key when stored again.
-        assert!(!serde_json::to_string(&p).unwrap().contains("pages"));
+        assert!(p.pages.is_empty() && p.pdf.is_none());
+        // And a text paper doesn't gain a `pages` or `pdf` key when stored again.
+        assert_eq!(serde_json::to_string(&p).unwrap(), r#"{"kind":"latex","text":"x","figures":[]}"#);
+    }
+
+    #[test]
+    fn a_pdf_sent_whole_is_kept_as_it_came_with_its_page_count() {
+        let p = from_pdf(b"%PDF-1.7 the file", 38);
+        assert_eq!((p.kind.as_str(), p.pages.len()), ("pdf", 0));
+        let pdf = p.pdf.as_ref().unwrap();
+        assert_eq!((pdf.base64.as_str(), pdf.pages), ("JVBERi0xLjcgdGhlIGZpbGU=", 38));
+        // It survives being stored and read back, as a checkpoint is.
+        let back: Paper = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert_eq!(back.pdf.unwrap().pages, 38);
     }
 }

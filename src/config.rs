@@ -12,14 +12,26 @@ use std::path::PathBuf;
 /// carries it.
 pub const BASE: &str = "/paper-bro";
 
-/// The OpenAI-compatible chat-completions endpoint a build calls.
+/// Which API the model server speaks (`LLM_API`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Api {
+    /// OpenAI's chat completions, which most servers speak. The default.
+    OpenAi,
+    /// Google's Gemini API (`generateContent`).
+    Gemini,
+}
+
+/// The model server a build calls.
 #[derive(Clone)]
 pub struct Endpoint {
     /// The endpoint's host, for messages.
     pub name: String,
-    /// The full chat-completions URL.
-    pub url: String,
-    /// Sent as a bearer token. Empty for a server that wants none.
+    pub api: Api,
+    /// `LLM_BASE_URL`, up to and including `/v1` (or `/v1beta` for Gemini).
+    /// A call's address is made from it (`url`).
+    pub base: String,
+    /// Sent as a bearer token, or for Gemini as `x-goog-api-key`. Empty for a
+    /// server that wants none.
     pub key: String,
     pub model: String,
     /// Used if `model` stops existing (HTTP 404).
@@ -31,7 +43,8 @@ impl std::fmt::Debug for Endpoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Endpoint")
             .field("name", &self.name)
-            .field("url", &self.url.split('?').next().unwrap_or_default())
+            .field("api", &self.api)
+            .field("base", &self.base.split('?').next().unwrap_or_default())
             .field("key", &if self.key.is_empty() { "" } else { "<redacted>" })
             .field("model", &self.model)
             .field("fallback_model", &self.fallback_model)
@@ -42,7 +55,43 @@ impl std::fmt::Debug for Endpoint {
 impl Endpoint {
     /// What a command that makes no model calls carries in place of one.
     fn unused() -> Self {
-        Self { name: "(not used)".into(), url: String::new(), key: String::new(), model: String::new(), fallback_model: String::new() }
+        Self {
+            name: "(not used)".into(),
+            api: Api::OpenAi,
+            base: String::new(),
+            key: String::new(),
+            model: String::new(),
+            fallback_model: String::new(),
+        }
+    }
+
+    /// Where a call to `model` goes: `/chat/completions`, or for Gemini
+    /// `/models/<model>:streamGenerateContent?alt=sse`. Made for each call
+    /// because a Gemini address names the model, and the model can change
+    /// (`fallback_model`). A model's own slashes stay slashes, so a proxy's
+    /// `provider/gemini-4-argon-high` is two segments of the path.
+    pub fn url(&self, model: &str) -> Result<String> {
+        let mut url = reqwest::Url::parse(&self.base).with_context(|| format!("LLM_BASE_URL={} isn't a URL", self.base))?;
+        let mut path = url.path_segments_mut().map_err(|_| anyhow::anyhow!("LLM_BASE_URL={} can't carry a path", self.base))?;
+        path.pop_if_empty();
+        match self.api {
+            Api::OpenAi => {
+                path.extend(["chat", "completions"]);
+            }
+            Api::Gemini => {
+                let mut segments: Vec<String> = std::iter::once("models").chain(model.split('/')).map(String::from).collect();
+                if let Some(last) = segments.last_mut() {
+                    last.push_str(":streamGenerateContent");
+                }
+                path.extend(&segments);
+            }
+        }
+        drop(path);
+        if self.api == Api::Gemini {
+            // Server-sent events; without it the answer streams as one JSON array.
+            url.query_pairs_mut().append_pair("alt", "sse");
+        }
+        Ok(url.to_string())
     }
 
     /// The settings, or for a command that needs no model, whatever is there.
@@ -53,26 +102,28 @@ impl Endpoint {
         }
     }
 
-    /// Any OpenAI-compatible server, hosted or your own: `LLM_BASE_URL` (up to
-    /// and including `/v1`), `LLM_MODEL`, and `LLM_API_KEY` if it wants one. It
-    /// must stream usage and support strict `json_schema` output.
+    /// Any OpenAI-compatible server, hosted or your own, or with
+    /// `LLM_API=gemini` one that speaks Google's Gemini API: `LLM_BASE_URL` (up
+    /// to and including `/v1`, or `/v1beta`), `LLM_MODEL`, and `LLM_API_KEY` if
+    /// it wants one. It must stream usage and support strict JSON output.
     fn from_vars(get: impl Fn(&str) -> Option<String>) -> Result<Self> {
         let need = |name: &str| get(name).with_context(|| format!("{name} is not set"));
+        let api = match get("LLM_API").as_deref() {
+            None | Some("openai") => Api::OpenAi,
+            Some("gemini") => Api::Gemini,
+            Some(other) => bail!("LLM_API={other}: expected openai or gemini"),
+        };
         let base = need("LLM_BASE_URL")?;
-        let parsed = reqwest::Url::parse(&base)
+        let mut parsed = reqwest::Url::parse(&base)
             .ok()
             .filter(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some())
             .with_context(|| format!("LLM_BASE_URL={base} isn't a URL (expected https://host/v1)"))?;
+        parsed.set_fragment(None);
         let model = need("LLM_MODEL")?;
-        let mut url = parsed.clone();
-        url.set_fragment(None);
-        url.path_segments_mut()
-            .map_err(|_| anyhow::anyhow!("LLM_BASE_URL={base} can't carry a path"))?
-            .pop_if_empty()
-            .extend(["chat", "completions"]);
         Ok(Self {
             name: parsed.host_str().unwrap_or_default().to_string(),
-            url: url.to_string(),
+            api,
+            base: parsed.to_string(),
             key: get("LLM_API_KEY").unwrap_or_default(),
             fallback_model: get("LLM_FALLBACK_MODEL").unwrap_or_else(|| model.clone()),
             model,
@@ -82,11 +133,56 @@ impl Endpoint {
     /// True when the key would cross a network unencrypted: one is set and the
     /// address is plain http to a host other than this machine.
     pub fn key_in_clear(&self) -> bool {
-        let Ok(u) = reqwest::Url::parse(&self.url) else { return false };
+        let Ok(u) = reqwest::Url::parse(&self.base) else { return false };
         let local = u.host_str().is_some_and(|h| {
             h == "localhost" || h.trim_matches(['[', ']']).parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
         });
         u.scheme() == "http" && !self.key.is_empty() && !local
+    }
+}
+
+/// How a paper that arXiv has only as a PDF reaches the model (`PDF_INPUT`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PdfInput {
+    /// Every page drawn into a picture (pdf.rs), which any model that reads
+    /// images can read. The default: a server may read only the first pages
+    /// of an attached PDF (one read 20).
+    Images,
+    /// The PDF itself, for a model that reads all of one (Gemini does).
+    File,
+}
+
+/// What paper-bro does with a PDF-only paper.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PdfSettings {
+    pub input: PdfInput,
+    /// The most pages taken (`PDF_MAX_PAGES`). Like `ingest::MAX_CHARS`, a
+    /// longer paper is refused rather than half-read.
+    pub max_pages: usize,
+}
+
+/// A hundred pages as pictures were read in one request: about 130K tokens a
+/// call, cached after the first. A whole PDF costs Gemini about 1,000 tokens
+/// a page.
+const DEFAULT_PDF_MAX_PAGES: usize = 100;
+
+impl PdfSettings {
+    /// For a command that reads a paper without the other settings.
+    pub fn from_env() -> Result<Self> {
+        Self::from_vars(var)
+    }
+
+    fn from_vars(get: impl Fn(&str) -> Option<String>) -> Result<Self> {
+        let input = match get("PDF_INPUT").as_deref() {
+            None | Some("images") => PdfInput::Images,
+            Some("file") => PdfInput::File,
+            Some(other) => bail!("PDF_INPUT={other}: expected images or file"),
+        };
+        let max_pages = match get("PDF_MAX_PAGES") {
+            None => DEFAULT_PDF_MAX_PAGES,
+            Some(n) => n.parse().ok().filter(|&n| n > 0).with_context(|| format!("PDF_MAX_PAGES={n}: expected a number of pages"))?,
+        };
+        Ok(Self { input, max_pages })
     }
 }
 
@@ -153,6 +249,7 @@ pub struct Config {
     pub daily_budget_usd: f64,
     /// Where new courses are announced; none without the TELEGRAM_* settings.
     pub telegram: Option<Telegram>,
+    pub pdf: PdfSettings,
 }
 
 fn var(name: &str) -> Option<String> {
@@ -215,6 +312,7 @@ impl Config {
             max_queued: parsed("MAX_QUEUED", 20)?,
             daily_budget_usd: parsed("DAILY_BUDGET_USD", 50.0)?,
             telegram: Telegram::from_vars(var)?,
+            pdf: PdfSettings::from_vars(var)?,
         })
     }
 }
@@ -231,20 +329,56 @@ mod tests {
     #[test]
     fn any_openai_compatible_server_by_url_model_and_key() {
         let e = Endpoint::from_vars(vars(&[("LLM_BASE_URL", "https://ep.example/v1/"), ("LLM_MODEL", "org/model"), ("LLM_API_KEY", "id.secret")])).unwrap();
-        assert_eq!((e.name.as_str(), e.url.as_str(), e.key.as_str()), ("ep.example", "https://ep.example/v1/chat/completions", "id.secret"));
+        assert_eq!((e.name.as_str(), e.api, e.key.as_str()), ("ep.example", Api::OpenAi, "id.secret"));
+        assert_eq!(e.url(&e.model).unwrap(), "https://ep.example/v1/chat/completions");
         assert_eq!((e.model.as_str(), e.fallback_model.as_str()), ("org/model", "org/model"));
         // A local server wants no key, and may name a fallback model.
-        let e = Endpoint::from_vars(vars(&[("LLM_BASE_URL", "http://localhost:11434/v1"), ("LLM_MODEL", "a"), ("LLM_FALLBACK_MODEL", "b")])).unwrap();
-        assert_eq!((e.name.as_str(), e.url.as_str(), e.key.as_str(), e.fallback_model.as_str()), ("localhost", "http://localhost:11434/v1/chat/completions", "", "b"));
+        let e = Endpoint::from_vars(vars(&[("LLM_BASE_URL", "http://localhost:11434/v1"), ("LLM_MODEL", "a"), ("LLM_FALLBACK_MODEL", "b"), ("LLM_API", "openai")])).unwrap();
+        assert_eq!((e.name.as_str(), e.key.as_str(), e.fallback_model.as_str()), ("localhost", "", "b"));
+        assert_eq!(e.url("b").unwrap(), "http://localhost:11434/v1/chat/completions");
     }
 
     #[test]
     fn the_path_is_added_before_any_query() {
-        let url = |base: &str| Endpoint::from_vars(vars(&[("LLM_BASE_URL", base), ("LLM_MODEL", "m")])).unwrap().url;
+        let url = |base: &str| Endpoint::from_vars(vars(&[("LLM_BASE_URL", base), ("LLM_MODEL", "m")])).unwrap().url("m").unwrap();
         assert_eq!(url("https://ep.example/v1?api-version=1"), "https://ep.example/v1/chat/completions?api-version=1");
         assert_eq!(url("https://ep.example/v1/?api-version=1"), "https://ep.example/v1/chat/completions?api-version=1");
         assert_eq!(url("https://ep.example"), "https://ep.example/chat/completions");
         assert_eq!(url("https://ep.example/v1#notes"), "https://ep.example/v1/chat/completions");
+    }
+
+    #[test]
+    fn a_gemini_server_is_called_at_the_address_of_the_model_asked_for() {
+        let gemini = |base: &str, model: &str| {
+            let e = Endpoint::from_vars(vars(&[("LLM_API", "gemini"), ("LLM_BASE_URL", base), ("LLM_MODEL", model)])).unwrap();
+            assert_eq!(e.api, Api::Gemini);
+            e
+        };
+        // A provider in front of the model keeps its slash: that is how a proxy routes it.
+        let e = gemini("http://127.0.0.1:7777/v1beta", "provider/gemini-4-argon-high");
+        assert_eq!(e.url(&e.model).unwrap(), "http://127.0.0.1:7777/v1beta/models/provider/gemini-4-argon-high:streamGenerateContent?alt=sse");
+        // The model is in the address, so the fallback has an address of its own.
+        assert_eq!(e.url("provider/gemini-3.1-pro-low").unwrap(), "http://127.0.0.1:7777/v1beta/models/provider/gemini-3.1-pro-low:streamGenerateContent?alt=sse");
+        let e = gemini("https://generativelanguage.googleapis.com/v1beta/", "gemini-3-pro-preview");
+        assert_eq!(e.url(&e.model).unwrap(), "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-preview:streamGenerateContent?alt=sse");
+        // A query the base carries is kept.
+        let e = gemini("https://ep.example/v1beta?project=p#notes", "m");
+        assert_eq!(e.url(&e.model).unwrap(), "https://ep.example/v1beta/models/m:streamGenerateContent?project=p&alt=sse");
+        // Anything but the two is a mistake worth stopping for.
+        let err = Endpoint::from_vars(vars(&[("LLM_API", "anthropic"), ("LLM_BASE_URL", "https://ep.example/v1"), ("LLM_MODEL", "m")])).unwrap_err();
+        assert!(err.to_string().contains("LLM_API=anthropic"), "{err}");
+    }
+
+    #[test]
+    fn pdf_papers_are_read_as_pictures_of_at_most_100_pages_unless_set_otherwise() {
+        assert_eq!(PdfSettings::from_vars(vars(&[])).unwrap(), PdfSettings { input: PdfInput::Images, max_pages: 100 });
+        let set = PdfSettings::from_vars(vars(&[("PDF_INPUT", "file"), ("PDF_MAX_PAGES", "300")])).unwrap();
+        assert_eq!(set, PdfSettings { input: PdfInput::File, max_pages: 300 });
+        assert_eq!(PdfSettings::from_vars(vars(&[("PDF_INPUT", "images")])).unwrap().input, PdfInput::Images);
+        for (name, bad) in [("PDF_INPUT", "pdf"), ("PDF_MAX_PAGES", "0"), ("PDF_MAX_PAGES", "lots")] {
+            let err = PdfSettings::from_vars(vars(&[(name, bad)])).unwrap_err().to_string();
+            assert!(err.contains(&format!("{name}={bad}")), "{err}");
+        }
     }
 
     #[test]
@@ -265,21 +399,21 @@ mod tests {
 
     #[test]
     fn a_key_over_plain_http_to_another_machine_is_noticed() {
-        let e = |url: &str, key: &str| Endpoint { name: "h".into(), url: url.into(), key: key.into(), model: "m".into(), fallback_model: "m".into() };
-        assert!(e("http://llm.internal:8000/v1/chat/completions", "k").key_in_clear());
-        assert!(!e("https://llm.example/v1/chat/completions", "k").key_in_clear());
-        assert!(!e("http://llm.internal:8000/v1/chat/completions", "").key_in_clear());
-        for local in ["http://localhost:11434/v1/chat/completions", "http://127.0.0.1:8000/v1/chat/completions", "http://[::1]:8000/v1/chat/completions"] {
+        let e = |base: &str, key: &str| Endpoint { name: "h".into(), api: Api::OpenAi, base: base.into(), key: key.into(), model: "m".into(), fallback_model: "m".into() };
+        assert!(e("http://llm.internal:8000/v1", "k").key_in_clear());
+        assert!(!e("https://llm.example/v1", "k").key_in_clear());
+        assert!(!e("http://llm.internal:8000/v1", "").key_in_clear());
+        for local in ["http://localhost:11434/v1", "http://127.0.0.1:8000/v1", "http://[::1]:8000/v1"] {
             assert!(!e(local, "k").key_in_clear(), "{local}");
         }
     }
 
     #[test]
     fn debug_output_never_shows_the_key_or_a_token_in_the_url() {
-        let e = Endpoint { name: "h".into(), url: "https://h/v1/chat/completions?token=hunter2".into(), key: "sk-secret".into(), model: "m".into(), fallback_model: "m".into() };
+        let e = Endpoint { name: "h".into(), api: Api::Gemini, base: "https://h/v1beta?key=hunter2".into(), key: "sk-secret".into(), model: "m".into(), fallback_model: "m".into() };
         let shown = format!("{e:?}");
         assert!(!shown.contains("sk-secret") && !shown.contains("hunter2"), "{shown}");
-        assert!(shown.contains("<redacted>") && shown.contains("https://h/v1/chat/completions"), "{shown}");
+        assert!(shown.contains("<redacted>") && shown.contains("https://h/v1beta"), "{shown}");
     }
 
     #[test]
