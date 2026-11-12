@@ -1,12 +1,15 @@
 //! Draw a PDF's pages into images, in a process of its own.
 //!
 //! A paper that arXiv has only as a PDF reaches the model as pictures of its
-//! pages (`pipeline::paper_message`). Not as an attached PDF: the model
-//! server reads at most 20 pages of one per request (measured: a 45-page PDF
-//! showed pages 1 to 20, two PDFs in one request still showed 20 pages in
-//! all, and no request option raised it), while it took 100 ordinary images
-//! in one request. And not as text pulled out of the PDF: math comes out
-//! scrambled, and figures and the shape of tables are lost.
+//! pages (`pipeline::paper_message`), unless `PDF_INPUT=file` sends the PDF
+//! itself. Pictures are the default because a model server may read only
+//! part of an attached PDF: the one this was built against read at most 20
+//! pages of one per request (measured: a 45-page PDF showed pages 1 to 20,
+//! two PDFs in one request still showed 20 pages in all, and no request
+//! option raised it), while it took 100 ordinary images in one request. A
+//! Gemini model reads a whole PDF, and for fewer tokens than the pictures.
+//! Never text pulled out of the PDF: math comes out scrambled, and figures
+//! and the shape of tables are lost.
 //!
 //! The drawing is `hayro`, in safe Rust, but safe is not the same as cheap.
 //! What a PDF costs to draw has little to do with the size of its file, the
@@ -20,6 +23,10 @@
 //!   reads a byte. Past it that process dies, and only it;
 //! - a time limit (`TIME`), after which the server kills it;
 //! - no environment, so none of the server's settings or keys.
+//!
+//! A PDF sent whole is opened there too, only to count its pages
+//! (`count_boxed`), so one that is damaged, protected or too long is turned
+//! away before any model call, just as one to be drawn is.
 //!
 //! Whatever becomes of it, the paper is one we can't read (`Unsupported`),
 //! never a failure worth retrying. A PDF has no figures a lesson can show.
@@ -43,13 +50,9 @@ use crate::ingest::Unsupported;
 
 /// The argument that makes this program the drawing process (`child`).
 pub const COMMAND: &str = "draw-pdf";
-/// The largest PDF file drawn.
+/// The largest PDF file taken. Sent whole, that is a 33 MB request with
+/// every call; one of 32 MB was read.
 const MAX_PDF: usize = 25 * 1024 * 1024;
-/// The most pages of a PDF taken. Like `ingest::MAX_CHARS`, a longer paper is
-/// rejected rather than half-read. At about 1,300 tokens a page this is
-/// about 130K tokens a call, cached after the first; a hundred pages were
-/// read in one request.
-const MAX_PAGES: usize = 100;
 /// How wide a drawn page is, in pixels: about 100 dpi for A4, and about 1,300
 /// tokens a page for the model, whatever the paper size.
 const PAGE_WIDE_PX: f32 = 833.0;
@@ -81,21 +84,28 @@ fn cant(why: &str) -> Unsupported {
     Unsupported(format!("this paper was submitted as a PDF only, and {why}, which paper-bro can't read yet"))
 }
 
-/// Draw every page of a PDF to a PNG, base64, in order, each `PAGE_WIDE_PX`
-/// wide (narrower if it would otherwise be over `PAGE_HIGH_PX` tall). Only
-/// the drawing process calls this (`child`); the module doc says why.
-fn draw(bytes: &[u8]) -> Result<Vec<String>, Unsupported> {
+/// Open a PDF that we take: not too large, readable, with at least one page
+/// and at most `max_pages`. Only the drawing process calls this (`child`);
+/// the module doc says why.
+fn open(bytes: &[u8], max_pages: usize) -> Result<Pdf, Unsupported> {
     if bytes.len() > MAX_PDF {
         return Err(cant(&format!("its PDF is over {} MB", MAX_PDF / (1024 * 1024))));
     }
     let pdf = Pdf::new(bytes.to_vec()).map_err(|_| cant("its PDF is damaged or protected"))?;
-    let pages = pdf.pages();
-    if pages.len() == 0 {
+    let pages = pdf.pages().len();
+    if pages == 0 {
         return Err(cant("its PDF has no pages"));
     }
-    if pages.len() > MAX_PAGES {
-        return Err(cant(&format!("its PDF has more than {MAX_PAGES} pages")));
+    if pages > max_pages {
+        return Err(cant(&format!("its PDF has more than {max_pages} pages")));
     }
+    Ok(pdf)
+}
+
+/// Draw every page of a PDF to a PNG, base64, in order, each `PAGE_WIDE_PX`
+/// wide (narrower if it would otherwise be over `PAGE_HIGH_PX` tall).
+fn draw(pdf: &Pdf) -> Result<Vec<String>, Unsupported> {
+    let pages = pdf.pages();
     let cache = RenderCache::new();
     let (settings, render_settings) = (InterpreterSettings::default(), RenderSettings::default());
     let (mut out, mut weight) = (Vec::with_capacity(pages.len()), 0usize);
@@ -116,26 +126,43 @@ fn draw(bytes: &[u8]) -> Result<Vec<String>, Unsupported> {
     Ok(out)
 }
 
-/// What the drawing process says on its stdout, as JSON: the pages, or why
-/// it won't draw this PDF.
+/// What the server wants from the drawing process: every page drawn, or for
+/// a PDF the model is sent whole, only how many pages it has.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Want {
+    Pages,
+    Count,
+}
+
+/// What the drawing process says on its stdout, as JSON: the pages, how many
+/// there are, or why it won't take this PDF.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum Drawn {
     Pages(Vec<String>),
+    Count(usize),
     Refused(String),
 }
 
-/// The whole of `paper-bro draw-pdf`: the PDF on stdin, the answer on
-/// stdout. `main` runs it before anything else is set up.
+/// The drawing process's answer about a PDF.
+fn answer(bytes: &[u8], max_pages: usize, want: Want) -> Drawn {
+    let read = open(bytes, max_pages).and_then(|pdf| match want {
+        Want::Pages => draw(&pdf).map(Drawn::Pages),
+        Want::Count => Ok(Drawn::Count(pdf.pages().len())),
+    });
+    read.unwrap_or_else(|Unsupported(why)| Drawn::Refused(why))
+}
+
+/// The whole of `paper-bro draw-pdf <max pages> [count]`: the PDF on stdin,
+/// the answer on stdout. `main` runs it before anything else is set up.
 pub fn child() -> Result<()> {
     limit_memory()?;
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    let max_pages = args.first().and_then(|n| n.parse().ok()).context("usage: paper-bro draw-pdf <max pages> [count]")?;
+    let want = if args.get(1).is_some_and(|a| a == "count") { Want::Count } else { Want::Pages };
     let mut pdf = Vec::new();
     std::io::stdin().lock().take(MAX_PDF as u64 + 1).read_to_end(&mut pdf).context("reading the PDF")?;
-    let drawn = match draw(&pdf) {
-        Ok(pages) => Drawn::Pages(pages),
-        Err(Unsupported(why)) => Drawn::Refused(why),
-    };
-    serde_json::to_writer(std::io::stdout().lock(), &drawn).context("writing the pages")?;
+    serde_json::to_writer(std::io::stdout().lock(), &answer(&pdf, max_pages, want)).context("writing the answer")?;
     Ok(())
 }
 
@@ -147,19 +174,43 @@ fn limit_memory() -> Result<()> {
     Ok(())
 }
 
-/// Draw a PDF's pages in a process of its own (see the module doc).
-pub async fn draw_boxed(pdf: &[u8]) -> Result<Vec<String>> {
+/// Draw the pages of a PDF of at most `max_pages` pages, in a process of its
+/// own (see the module doc).
+pub async fn draw_boxed(pdf: &[u8], max_pages: usize) -> Result<Vec<String>> {
+    match ask(pdf, max_pages, Want::Pages).await? {
+        Drawn::Pages(pages) => Ok(pages),
+        _ => Err(cant("its PDF could not be drawn").into()),
+    }
+}
+
+/// Open a PDF in a process of its own only to count its pages, for a PDF
+/// the model is sent whole: one that would not be drawn is not sent either.
+pub async fn count_boxed(pdf: &[u8], max_pages: usize) -> Result<usize> {
+    match ask(pdf, max_pages, Want::Count).await? {
+        Drawn::Count(pages) => Ok(pages),
+        _ => Err(cant("its PDF could not be opened").into()),
+    }
+}
+
+async fn ask(pdf: &[u8], max_pages: usize, want: Want) -> Result<Drawn> {
     // On Linux this is the running program itself, even when a deploy has
     // since replaced the file it was started from.
     let this_program: PathBuf =
         if cfg!(target_os = "linux") { "/proc/self/exe".into() } else { std::env::current_exe().context("finding this program's own file")? };
     let mut drawer = Command::new(this_program);
-    drawer.arg(COMMAND);
-    drawn_by(drawer, pdf, TIME).await
+    drawer.arg(COMMAND).arg(max_pages.to_string());
+    if want == Want::Count {
+        drawer.arg("count");
+    }
+    drawn_by(drawer, pdf, TIME, want).await
 }
 
 /// Run a drawing process on a PDF and read its answer, for at most `limit`.
-async fn drawn_by(mut drawer: Command, pdf: &[u8], limit: Duration) -> Result<Vec<String>> {
+async fn drawn_by(mut drawer: Command, pdf: &[u8], limit: Duration, want: Want) -> Result<Drawn> {
+    let (doing, done) = match want {
+        Want::Pages => ("draw", "drawn"),
+        Want::Count => ("open", "opened"),
+    };
     let mut child = drawer
         .env_clear()
         .stdin(Stdio::piped())
@@ -186,14 +237,14 @@ async fn drawn_by(mut drawer: Command, pdf: &[u8], limit: Duration) -> Result<Ve
         Ok(Some((child.wait().await?, said)))
     };
     match tokio::time::timeout(limit, conversation).await {
-        Err(_) => Err(cant("its PDF took too long to draw").into()),
+        Err(_) => Err(cant(&format!("its PDF took too long to {doing}")).into()),
         Ok(Err(e)) => Err(e.context("talking to the process that draws a PDF")),
         Ok(Ok(None)) => Err(cant("its pages come to too much data").into()),
         Ok(Ok(Some((ended, said)))) => match serde_json::from_slice(&said) {
-            Ok(Drawn::Pages(pages)) if ended.success() => Ok(pages),
             Ok(Drawn::Refused(why)) if ended.success() => Err(Unsupported(why).into()),
+            Ok(answer) if ended.success() => Ok(answer),
             // It crashed, ran out of memory, or said something else.
-            _ => Err(cant("its PDF could not be drawn").into()),
+            _ => Err(cant(&format!("its PDF could not be {done}")).into()),
         },
     }
 }
@@ -237,9 +288,14 @@ mod tests {
         (u32::from_be_bytes(png[16..20].try_into().unwrap()), u32::from_be_bytes(png[20..24].try_into().unwrap()))
     }
 
+    /// Open and draw, as the drawing process does, with room for 100 pages.
+    fn drawn(bytes: &[u8]) -> Result<Vec<String>, Unsupported> {
+        draw(&open(bytes, 100)?)
+    }
+
     #[test]
     fn a_pdf_is_drawn_one_image_per_page() {
-        let pages = draw(&pdf_of(&[(612, 792), (612, 792), (612, 792)])).unwrap();
+        let pages = drawn(&pdf_of(&[(612, 792), (612, 792), (612, 792)])).unwrap();
         assert_eq!(pages.len(), 3);
         // Every page is the same width, whatever the paper size, so costs the same.
         for page in &pages {
@@ -251,7 +307,7 @@ mod tests {
 
     #[test]
     fn a_page_of_another_shape_is_scaled_to_the_same_width_and_a_very_tall_one_to_fit() {
-        let pages = draw(&pdf_of(&[(595, 842), (300, 3000)])).unwrap();
+        let pages = drawn(&pdf_of(&[(595, 842), (300, 3000)])).unwrap();
         assert_eq!(png_size(&pages[0]), (833, 1178), "A4");
         let (w, h) = png_size(&pages[1]);
         assert!(h <= 1400 && w < 833, "a tall page is shrunk to fit: {w}x{h}");
@@ -259,22 +315,33 @@ mod tests {
 
     #[test]
     fn a_pdf_over_the_page_limit_is_refused_before_any_page_is_drawn() {
-        let refused = draw(&pdf_of(&vec![(612, 792); MAX_PAGES + 1])).unwrap_err();
-        assert!(refused.0.contains(&format!("more than {MAX_PAGES} pages")), "{}", refused.0);
-        assert!(draw(&pdf_of(&vec![(612, 792); 2])).is_ok());
+        let refused = open(&pdf_of(&vec![(612, 792); 4]), 3).err().unwrap();
+        assert!(refused.0.contains("more than 3 pages"), "{}", refused.0);
+        assert!(drawn(&pdf_of(&vec![(612, 792); 2])).is_ok());
+        let Drawn::Pages(pages) = answer(&pdf_of(&vec![(612, 792); 3]), 3, Want::Pages) else { panic!("not drawn") };
+        assert_eq!(pages.len(), 3, "a PDF of exactly the limit is taken");
+    }
+
+    #[test]
+    fn a_pdf_sent_whole_is_only_counted_and_refused_over_the_same_limit() {
+        assert_eq!(answer(&pdf_of(&vec![(612, 792); 3]), 3, Want::Count), Drawn::Count(3));
+        let Drawn::Refused(why) = answer(&pdf_of(&vec![(612, 792); 4]), 3, Want::Count) else { panic!("not refused") };
+        assert!(why.contains("more than 3 pages"), "{why}");
+        let Drawn::Refused(why) = answer(b"%PDF-1.5 ...", 3, Want::Count) else { panic!("not refused") };
+        assert!(why.contains("damaged or protected"), "{why}");
     }
 
     #[test]
     fn a_pdf_over_the_size_limit_is_refused_and_the_limit_named() {
         let mut big = b"%PDF-1.5 ".to_vec();
         big.resize(MAX_PDF + 1, b' ');
-        assert!(draw(&big).unwrap_err().0.contains("over 25 MB"));
+        assert!(open(&big, 100).err().unwrap().0.contains("over 25 MB"));
     }
 
     #[test]
     fn a_damaged_pdf_is_refused() {
         for junk in [&b"%PDF-1.5 ..."[..], &b"%PDF-1.7\n1 0 obj << /Type /Catalog >>"[..], &b"%PDF"[..]] {
-            assert!(draw(junk).unwrap_err().0.contains("damaged or protected"));
+            assert!(open(junk, 100).err().unwrap().0.contains("damaged or protected"));
         }
     }
 
@@ -282,6 +349,7 @@ mod tests {
     fn the_two_sides_agree_on_what_an_answer_looks_like() {
         // The drawing process writes this; `drawn_by` reads it.
         assert_eq!(serde_json::to_string(&Drawn::Pages(vec!["QUJD".into(), "REVG".into()])).unwrap(), r#"{"pages":["QUJD","REVG"]}"#);
+        assert_eq!(serde_json::to_string(&Drawn::Count(38)).unwrap(), r#"{"count":38}"#);
         assert_eq!(serde_json::to_string(&Drawn::Refused("too many pages".into())).unwrap(), r#"{"refused":"too many pages"}"#);
         assert_eq!(serde_json::from_str::<Drawn>(r#"{"refused":"x"}"#).unwrap(), Drawn::Refused("x".into()));
     }
@@ -306,13 +374,15 @@ mod tests {
     #[tokio::test]
     async fn the_pages_a_drawing_process_answers_with_come_back_in_order() {
         // Like the real one, it reads all it is sent and then answers.
-        let pages = drawn_by(sh(r#"/bin/cat > /dev/null; printf '{"pages":["QUJD","REVG"]}'"#), A_PDF, WAIT).await.unwrap();
-        assert_eq!(pages, ["QUJD", "REVG"]);
+        let pages = drawn_by(sh(r#"/bin/cat > /dev/null; printf '{"pages":["QUJD","REVG"]}'"#), A_PDF, WAIT, Want::Pages).await.unwrap();
+        assert_eq!(pages, Drawn::Pages(vec!["QUJD".into(), "REVG".into()]));
+        let count = drawn_by(sh(r#"/bin/cat > /dev/null; printf '{"count":38}'"#), A_PDF, WAIT, Want::Count).await.unwrap();
+        assert_eq!(count, Drawn::Count(38));
     }
 
     #[tokio::test]
     async fn a_refusal_from_the_drawing_process_is_the_reason_given() {
-        let e = drawn_by(sh(r#"/bin/cat > /dev/null; printf '{"refused":"too many pages"}'"#), A_PDF, WAIT).await.unwrap_err();
+        let e = drawn_by(sh(r#"/bin/cat > /dev/null; printf '{"refused":"too many pages"}'"#), A_PDF, WAIT, Want::Pages).await.unwrap_err();
         assert_eq!(refusal(e), "too many pages");
     }
 
@@ -326,9 +396,12 @@ mod tests {
             r#"/bin/cat > /dev/null; printf 'hello'"#,                          // says something else
         ];
         for way in ways {
-            let e = drawn_by(sh(way), A_PDF, WAIT).await.unwrap_err();
+            let e = drawn_by(sh(way), A_PDF, WAIT, Want::Pages).await.unwrap_err();
             assert_eq!(refusal(e), NOT_DRAWN, "{way}");
         }
+        // One that only had to count says so.
+        let e = drawn_by(sh("kill -9 $$"), A_PDF, WAIT, Want::Count).await.unwrap_err();
+        assert_eq!(refusal(e), NOT_DRAWN.replace("drawn", "opened"));
     }
 
     #[tokio::test]
@@ -336,7 +409,7 @@ mod tests {
         let mark = std::env::temp_dir().join(format!("paper-bro-test-{}-still-alive", std::process::id()));
         let _ = std::fs::remove_file(&mark);
         let started = Instant::now();
-        let e = drawn_by(sh(&format!("/bin/sleep 1; echo yes > '{}'", mark.display())), A_PDF, Duration::from_millis(100)).await.unwrap_err();
+        let e = drawn_by(sh(&format!("/bin/sleep 1; echo yes > '{}'", mark.display())), A_PDF, Duration::from_millis(100), Want::Pages).await.unwrap_err();
         assert!(refusal(e).contains("its PDF took too long to draw"));
         assert!(started.elapsed() < Duration::from_millis(900), "the caller is not kept waiting: {:?}", started.elapsed());
         // Had it lived, it would have left its mark by now.
@@ -346,14 +419,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_drawing_process_that_says_too_much_is_not_heard_out() {
-        let e = drawn_by(sh(&format!("/bin/cat > /dev/null; /usr/bin/yes | /usr/bin/head -c {}", MAX_ANSWER + 5_000_000)), A_PDF, WAIT).await.unwrap_err();
+        let e = drawn_by(sh(&format!("/bin/cat > /dev/null; /usr/bin/yes | /usr/bin/head -c {}", MAX_ANSWER + 5_000_000)), A_PDF, WAIT, Want::Pages).await.unwrap_err();
         assert!(refusal(e).contains("its pages come to too much data"));
     }
 
     #[tokio::test]
     async fn the_drawing_process_gets_none_of_the_servers_environment() {
         assert!(std::env::var("HOME").is_ok(), "this test needs HOME set, to see it withheld");
-        let pages = drawn_by(sh(r#"/bin/cat > /dev/null; printf '{"pages":["%s"]}' "${HOME:-withheld}""#), A_PDF, WAIT).await.unwrap();
-        assert_eq!(pages, ["withheld"]);
+        let pages = drawn_by(sh(r#"/bin/cat > /dev/null; printf '{"pages":["%s"]}' "${HOME:-withheld}""#), A_PDF, WAIT, Want::Pages).await.unwrap();
+        assert_eq!(pages, Drawn::Pages(vec!["withheld".into()]));
     }
 }

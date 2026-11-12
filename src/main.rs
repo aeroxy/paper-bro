@@ -99,8 +99,8 @@ async fn serve() -> Result<()> {
     let public = tokio::net::TcpListener::bind(listen).await.with_context(|| format!("binding {listen}"))?;
     let admin = tokio::net::TcpListener::bind(admin_listen).await.with_context(|| format!("binding {admin_listen}"))?;
     log::info!(
-        "paper-bro starting: listen={listen} admin={admin_listen} workers={workers} publish={publish} endpoint={} model={}",
-        cfg.endpoint.name, cfg.endpoint.model
+        "paper-bro starting: listen={listen} admin={admin_listen} workers={workers} publish={publish} endpoint={} api={:?} model={} pdf={:?}",
+        cfg.endpoint.name, cfg.endpoint.api, cfg.endpoint.model, cfg.pdf
     );
     let app = Arc::new(app::App::new(cfg).await?);
     let stale = qa::remove_stale_profiles();
@@ -383,10 +383,14 @@ async fn ingest_one(id: &str) -> Result<()> {
     let paper = match client.html(id, meta.version).await? {
         Some((url, html)) => ingest::from_latexml(&url, &html)?,
         None => match client.eprint(id, meta.version).await? {
-            Some(bytes) => pipeline::read_eprint(bytes).await?,
+            Some(bytes) => pipeline::read_eprint(bytes, config::PdfSettings::from_env()?).await?,
             None => bail!("no source"),
         },
     };
+    if let Some(pdf) = &paper.pdf {
+        println!("source: pdf | {} pages, sent whole | {} KB", pdf.pages, pdf.base64.len() * 3 / 4 / 1024);
+        return Ok(());
+    }
     if !paper.pages.is_empty() {
         // What the model reads is the pages, so write them out to look at.
         use base64::Engine;
