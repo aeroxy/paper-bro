@@ -78,7 +78,7 @@ export function PaperPage() {
             <h2 className="mt-2 text-2xl font-extrabold tracking-tight">Nobody has asked for this one.</h2>
             <p className="mt-3 text-[14.5px] text-fg-2">
               paper-bro will read the paper and write 6 to 10 lessons with hands-on labs and a quiz, for curious beginners.
-              It takes about 5 to 10 minutes, and then the course is here for everyone.
+              It takes about 20 to 30 minutes, and then the course is here for everyone.
             </p>
             <button className="btn-accent mt-5" onClick={start} disabled={busy}>
               {busy ? 'Starting…' : 'Build the course →'}
@@ -194,7 +194,7 @@ function Building({ paper, onDone }: { paper: Paper; onDone: () => void }) {
           ? 'Waiting for model credit.'
           : paper.status === 'queued' && paper.queue_position && paper.queue_position > 1
             ? `Number ${paper.queue_position} in the queue.`
-            : 'This takes 5 to 10 minutes.'}
+            : 'This takes 20 to 30 minutes.'}
       </h2>
       <p className="mt-2 text-[13.5px] text-fg-3">
         You can leave and come back: the course will be here when it's done. To hear when it is, follow{' '}
