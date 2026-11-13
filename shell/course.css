@@ -23,6 +23,7 @@ a{color:var(--action)}a:hover{color:var(--action-700)}
 /* An outline, not a shadow: it clears 3:1 against the page and the dark
    cards, and forced-colours mode keeps it (it drops shadows). */
 :focus-visible{outline:2px solid var(--action);outline-offset:2px;border-radius:var(--r-sm)}
+.visually-hidden{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .wrap{max-width:1200px;margin:0 auto;padding:0 16px;position:relative;z-index:1}
 @media(min-width:640px){.wrap{padding:0 24px}}@media(min-width:1024px){.wrap{padding:0 32px}}
 
