@@ -16,6 +16,24 @@
     var r = e.reason; report('Unhandled promise rejection: ' + (r && r.message ? r.message : r));
   });
 
+  // On a phone, a finger dragged across a canvas scrolls the page, and the
+  // browser cancels the pointer the lab was following, so a lab that drags
+  // on a canvas never gets the drag; labs rarely set touch-action themselves.
+  // A canvas that listens for both a press and a move, pointer or touch, is
+  // one the reader drags on: it keeps its touches, unless the lab chose a
+  // touch-action of its own. A canvas that is only tapped or hovered still
+  // lets the page scroll.
+  var presses = new WeakSet(), moves = new WeakSet(), listen = EventTarget.prototype.addEventListener;
+  EventTarget.prototype.addEventListener = function (type, fn, opts) {
+    if (this instanceof HTMLCanvasElement) {
+      if (type === 'pointerdown' || type === 'touchstart') presses.add(this);
+      if (type === 'pointermove' || type === 'touchmove') moves.add(this);
+      if (presses.has(this) && moves.has(this) && !this.style.touchAction &&
+          (!this.isConnected || getComputedStyle(this).touchAction === 'auto')) this.style.touchAction = 'none';
+    }
+    return listen.call(this, type, fn, opts);
+  };
+
   window.$ = function (s, r) { return (r || document).querySelector(s); };
   window.$$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
   window.REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
