@@ -35,8 +35,11 @@ document.addEventListener('DOMContentLoaded', function () {
   var settle = function () {
     qa.ready = frames.every(function (f) { return qa.labs[f.id].state !== 'loading'; });
   };
-  var srcdoc = function (lab) {
-    return '<!doctype html><html><head><meta charset="utf-8">' + D.labHead + (lab.tex ? D.labTex : '') +
+  // The lab's page names its language, so a screen reader reads the lab in the
+  // course's voice and not its own default, and takes the frame's title.
+  var srcdoc = function (lab, title) {
+    title = String(title).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    return '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>' + title + '</title>' + D.labHead + (lab.tex ? D.labTex : '') +
       '<style>' + D.labCss + '\n' + lab.css + '</style><script>' + D.labJs + '<\/script></head><body>' +
       '<div id="lab-root">' + lab.html + '</div><script>PB.__run(function(){\n' + lab.js + '\n});<\/script></body></html>';
   };
@@ -44,7 +47,7 @@ document.addEventListener('DOMContentLoaded', function () {
     var id = ifr.getAttribute('data-lab'), lab = D.labs[id];
     if (!lab) return;
     qa.labs[id] = { state: 'loading', errors: [] };
-    ifr.srcdoc = srcdoc(lab);
+    ifr.srcdoc = srcdoc(lab, ifr.title);
     frames.push({ id: id, el: ifr });
   });
   settle();
