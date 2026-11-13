@@ -388,6 +388,20 @@ async fn check_course(browser: &Browser, served: &Arc<Served>) -> Result<Vec<Str
         return Ok(problems);
     }
     wait_ready(&page, Duration::from_secs(20)).await;
+    // The page's files from the CDN carry digests (course.rs), and a browser
+    // refuses a file that doesn't match without a word to the page: the math
+    // stays as source and the fonts fall back. A digest gone wrong, or the CDN
+    // serving something else, would otherwise pass unseen.
+    let cdn = "(() => {
+        const out = [...document.querySelectorAll('link[rel=stylesheet]')].filter(l => !l.sheet).map(l => 'a stylesheet did not load: ' + l.href);
+        if (!window.katex || !window.renderMathInElement) out.push('KaTeX did not load');
+        return out;
+    })()";
+    match eval(&page, cdn, Duration::from_secs(5)).await {
+        Ok(Value::Array(found)) => problems.extend(found.iter().filter_map(|v| v.as_str().map(String::from))),
+        Ok(_) => problems.push("the check of the CDN's files returned no result".into()),
+        Err(e) => problems.push(format!("the check of the CDN's files couldn't finish: {e}")),
+    }
     if let Ok(Value::Array(k)) = eval(&page, "window.__pbQa.katexErrors()", Duration::from_secs(5)).await {
         for e in k {
             problems.push(format!("math that KaTeX couldn't render: {}", e.as_str().unwrap_or("")));
