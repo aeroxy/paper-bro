@@ -208,6 +208,18 @@ fn check_pages(paper: &Paper, max_pages: usize) -> Result<()> {
     Ok(())
 }
 
+/// Whether a paper is in the form PDF_INPUT asks for now: a PDF as pictures
+/// of its pages, or whole. A text paper always is. One saved under the other
+/// setting, by a build that resumes after the setting changed, is read again:
+/// sent whole to a server that reads only part of a PDF, it would be read in
+/// part.
+fn matches_pdf_input(paper: &Paper, input: PdfInput) -> bool {
+    match input {
+        PdfInput::Images => paper.pdf.is_none(),
+        PdfInput::File => paper.pages.is_empty(),
+    }
+}
+
 /// A call the build can do without failed: the review, the quiz fix, one
 /// lesson's repair. Out of credit is the exception: it holds the course like
 /// any other call would, because carrying on would publish the course
@@ -396,8 +408,10 @@ impl Job {
             }
         }
 
-        // 1. Read the paper.
-        let paper: Paper = match self.artifact("paper").await {
+        // 1. Read the paper, again if it was saved in a form PDF_INPUT no
+        // longer asks for.
+        let saved: Option<Paper> = self.artifact("paper").await;
+        let paper: Paper = match saved.filter(|p| matches_pdf_input(p, app.cfg.pdf.input)) {
             Some(p) => p,
             None => {
                 self.stage("ingest", "Reading the paper from arXiv").await;
@@ -879,6 +893,19 @@ mod tests {
         // A text paper has no pages to count.
         let text = Paper { kind: "html".into(), text: "x".into(), figures: vec![], pages: vec![], pdf: None };
         assert!(check_pages(&text, 1).is_ok());
+    }
+
+    #[test]
+    fn a_stored_pdf_paper_is_read_again_when_pdf_input_has_changed() {
+        let whole = ingest::from_pdf(b"%PDF-1.7", 38);
+        assert!(matches_pdf_input(&whole, PdfInput::File));
+        assert!(!matches_pdf_input(&whole, PdfInput::Images), "a whole PDF would go to a server set for pictures");
+        let drawn = ingest::from_pages(vec!["QUJD".into(); 3]);
+        assert!(matches_pdf_input(&drawn, PdfInput::Images));
+        assert!(!matches_pdf_input(&drawn, PdfInput::File));
+        // A text paper is the same under either.
+        let text = Paper { kind: "html".into(), text: "x".into(), figures: vec![], pages: vec![], pdf: None };
+        assert!(matches_pdf_input(&text, PdfInput::Images) && matches_pdf_input(&text, PdfInput::File));
     }
 
     #[test]
