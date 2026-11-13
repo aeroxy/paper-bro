@@ -309,10 +309,59 @@
                     function (err) { post({ type: 'selftest', result: { errors: [String(err)], crashed: true } }); });
   });
 
+  // A lab's .note is the explanation that changes as the reader works the
+  // controls, and a screen reader hears it through one polite live region.
+  // A note is read when the reader's input changes it: one that had been
+  // still and changes within a second of a key press, click or slider move.
+  // It is read once it settles, 600 ms after its last change (10 s at most),
+  // so a slider dragged or a run set going is read at the end and not at
+  // every step. A note that changes by itself, like a running counter, is
+  // never still for long enough to be taken for the reader's.
+  var narrate = function (root) {
+    var live = document.createElement('div');
+    live.className = 'pb-live'; live.setAttribute('role', 'status');
+    document.body.appendChild(live);
+    var touched = 0, first = 0, timer = 0, notes = [], last = new WeakMap();
+    ['pointerdown', 'click', 'input', 'change', 'keydown'].forEach(function (t) {
+      addEventListener(t, function () { touched = Date.now(); }, true);
+    });
+    // A copy keeps KaTeX's MathML, which is what a screen reader reads; without
+    // ids and classes it can't be mistaken for the lab's own elements.
+    var copy = function (el) {
+      var c = el.cloneNode(true);
+      [c].concat(Array.prototype.slice.call(c.querySelectorAll('*'))).forEach(function (n) {
+        ['id', 'class', 'for', 'name'].forEach(function (a) { n.removeAttribute(a); });
+      });
+      return c;
+    };
+    var say = function () {
+      live.textContent = '';
+      notes.forEach(function (n) { if (n.isConnected) live.appendChild(copy(n)); });
+      notes = []; first = 0;
+    };
+    new MutationObserver(function (records) {
+      var now = Date.now(), moved = false;
+      records.forEach(function (r) {
+        var el = r.target.nodeType === 1 ? r.target : r.target.parentNode;
+        var note = el && el.closest && el.closest('.note');
+        if (!note) return;
+        var still = now - (last.get(note) || 0) >= 600;
+        last.set(note, now);
+        if (notes.indexOf(note) >= 0) moved = true;
+        else if (still && now - touched <= 1000) { notes.push(note); moved = true; }
+      });
+      if (!moved) return;
+      if (!first) first = now;
+      clearTimeout(timer);
+      timer = setTimeout(say, Math.min(600, Math.max(0, first + 10000 - now)));
+    }).observe(root, { subtree: true, childList: true, characterData: true });
+  };
+
   addEventListener('DOMContentLoaded', function () {
     var root = document.getElementById('lab-root');
     var send = function () { post({ type: 'height', h: Math.ceil(root.getBoundingClientRect().height) + 4 }); };
     new ResizeObserver(send).observe(root);
     send();
+    narrate(root);
   });
 })();
