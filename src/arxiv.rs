@@ -4,8 +4,11 @@
 //! counted across every machine we run. paper-bro is one process, so one
 //! mutex held for the whole request is the entire rate limiter.
 //!
-//! We fetch metadata (CC0) and the paper itself to read it. We never store or
-//! serve the PDF or source; courses link to the abstract page.
+//! We fetch metadata (CC0) and the paper itself to read it. We never serve the
+//! PDF or source, and keep what we read of a paper (its text, or the PDF or
+//! pictures of its pages) only as a checkpoint for its build: it goes when
+//! the course is ready or fails for good, and a PDF's within the hour once no
+//! build is using it (db.rs). Courses link to the abstract page.
 
 use anyhow::{Context, Result, bail};
 use regex::Regex;

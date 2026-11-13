@@ -121,6 +121,20 @@ async fn serve() -> Result<()> {
                 app.courses.write().unwrap().insert(c.arxiv_id.clone(), c);
             }
         }
+        // Now and every hour, drop the PDFs no build is using (db::sweep_pdfs).
+        // Not in a dry run: it shares the database.
+        let app = app.clone();
+        tokio::spawn(async move {
+            let mut every = tokio::time::interval(std::time::Duration::from_secs(60 * 60));
+            loop {
+                every.tick().await;
+                match db::sweep_pdfs(&app.pool).await {
+                    Ok(0) => {}
+                    Ok(n) => log::info!("dropped {n} stored PDF paper(s) no build is using"),
+                    Err(e) => log::warn!("couldn't sweep stored PDF papers: {e:#}"),
+                }
+            }
+        });
     }
     for n in 0..workers {
         tokio::spawn(pipeline::worker(app.clone(), n));
