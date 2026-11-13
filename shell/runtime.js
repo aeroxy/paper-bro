@@ -92,7 +92,12 @@ document.addEventListener('DOMContentLoaded', function () {
     var t = $('#progTxt'), b = $('#progBar');
     if (t) t.textContent = n + ' / ' + ids.length + ' done';
     if (b) b.style.width = (ids.length ? n / ids.length * 100 : 0) + '%';
-    $$('#sideNav a').forEach(function (a) { a.classList.toggle('done', done.indexOf(a.getAttribute('href').slice(1)) >= 0); });
+    $$('#sideNav a').forEach(function (a) {
+      var d = done.indexOf(a.getAttribute('href').slice(1)) >= 0, ck = $('.ck', a);
+      a.classList.toggle('done', d);
+      // The tick is invisible until the lesson is done, and silent until then too.
+      if (ck) { if (d) ck.removeAttribute('aria-hidden'); else ck.setAttribute('aria-hidden', 'true'); }
+    });
     $$('[data-done]').forEach(function (btn) {
       var d = done.indexOf(btn.getAttribute('data-done')) >= 0;
       btn.classList.toggle('is-done', d); btn.textContent = d ? '✓ Done' : '✓ Mark as done';
@@ -158,7 +163,12 @@ document.addEventListener('DOMContentLoaded', function () {
   if ('IntersectionObserver' in window) {
     var io = new IntersectionObserver(function (es) {
       es.forEach(function (en) {
-        if (en.isIntersecting) links.forEach(function (a) { a.classList.toggle('active', a.getAttribute('href') === '#' + en.target.id); });
+        if (!en.isIntersecting) return;
+        links.forEach(function (a) {
+          var on = a.getAttribute('href') === '#' + en.target.id;
+          a.classList.toggle('active', on);
+          if (on) a.setAttribute('aria-current', 'true'); else a.removeAttribute('aria-current');
+        });
       });
     }, { rootMargin: '-40% 0px -55% 0px' });
     $$('section.lesson').forEach(function (s) { io.observe(s); });
