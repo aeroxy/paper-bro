@@ -311,7 +311,27 @@ fn csp(origin: &str) -> String {
 
 const LOGO: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true"><symbol id="logo" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="#0B0B0B"/><path d="M10 8h9l4 4v12H10z" fill="none" stroke="#fff" stroke-width="1.6" stroke-linejoin="round" opacity=".85"/><path d="M13 15h7M13 18.5h7" stroke="#fff" stroke-width="1.4" stroke-linecap="round" opacity=".55"/><circle cx="22.5" cy="22.5" r="4.2" fill="#D85A30"/></symbol></svg>"##;
 
-const FONTS: &str = r#"<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/inter@5/index.min.css"><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/inter@5/700.min.css"><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/inter@5/800.min.css"><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/jetbrains-mono@5/index.min.css">"#;
+/// Digests (sha384) of the files the page and its labs load from the CDN,
+/// which serves them exactly as published on npm. A browser refuses a file
+/// that doesn't match its digest, so a file changed on the CDN is never run;
+/// QA reports a page whose CDN files didn't load (qa.rs), as one would if a
+/// digest here were wrong. A new version means new digests.
+const KATEX_CSS_SRI: &str = "sha384-nH0MfJ44wi1dd7w6jinlyBgljjS8EJAh2JBoRad8a3VDw2K69vfaaqm4WnR+gXtA";
+const KATEX_JS_SRI: &str = "sha384-CwjPRVHTvLiMBFjEoij+QZViMV5rhTOIp7CJzl24JEqpRDA1sJFHVXXLURktbYYp";
+const AUTO_RENDER_SRI: &str = "sha384-bjyGPfbij8/NDKJhSGZNP/khQVgtHUE5exjm4Ydllo42FwIgYsdLO2lXGmRBf5Mz";
+/// A file with a digest has to be fetched with CORS, and the CDN needn't
+/// learn which course asked for it.
+const CDN_ATTRS: &str = r#"crossorigin="anonymous" referrerpolicy="no-referrer""#;
+
+/// The fonts: the packages' own stylesheets at pinned versions. Not the CDN's
+/// `.min.css`, which jsDelivr minifies itself and may remake, and with which
+/// it says not to use a digest.
+const FONTS: &str = concat!(
+    r#"<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/inter@5.3.0/index.css" integrity="sha384-xIqhvN2Z/Umq7Ox8y6t3uFHhjyQo0knjgs1wcj13JjTuHOGIaXBHO7eal9RhNMdd" crossorigin="anonymous" referrerpolicy="no-referrer">"#,
+    r#"<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/inter@5.3.0/700.css" integrity="sha384-ABwFxKIeYuLxwfO9KnWKaJWmYGG07Ug5PUbvSA8+tyO6Mu3ceWIGYbq+DW5ktdGH" crossorigin="anonymous" referrerpolicy="no-referrer">"#,
+    r#"<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/inter@5.3.0/800.css" integrity="sha384-3cPs4JJs1BZJaofPBViYLnJ19d9PukSSzhJVcd+D+o0alUa5zVFRGvZqHcwYRAgd" crossorigin="anonymous" referrerpolicy="no-referrer">"#,
+    r#"<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/jetbrains-mono@5.3.0/index.css" integrity="sha384-+aDSenDTh79o4iTbyqV1a0t7NimPoIJzYQwPxZf88ryw9Q9RgzJimk6jI+j2DR6q" crossorigin="anonymous" referrerpolicy="no-referrer">"#,
+);
 
 /// The app's icon (frontend/index.html), inline because the page's CSP lets
 /// images come only from `data:` and arXiv, and Chrome holds favicons to that.
@@ -364,9 +384,9 @@ fn head(c: &Course, origin: &str, title: &str) -> String {
 <meta name="twitter:card" content="summary">
 <script type="application/ld+json">{ld}</script>
 {FONTS}
-<link rel="stylesheet" href="{KATEX}/katex.min.css">
-<script defer src="{KATEX}/katex.min.js"></script>
-<script defer src="{KATEX}/contrib/auto-render.min.js"></script>
+<link rel="stylesheet" href="{KATEX}/katex.min.css" integrity="{KATEX_CSS_SRI}" {CDN_ATTRS}>
+<script defer src="{KATEX}/katex.min.js" integrity="{KATEX_JS_SRI}" {CDN_ATTRS}></script>
+<script defer src="{KATEX}/contrib/auto-render.min.js" integrity="{AUTO_RENDER_SRI}" {CDN_ATTRS}></script>
 <style>{css}</style>
 </head>
 "#,
@@ -410,7 +430,9 @@ fn data(c: &Course, origin: &str, only: Option<usize>) -> String {
         "quiz": quiz,
         "errorUrl": format!("{origin}/paper-bro/api/lab-errors"),
         "labHead": FONTS,
-        "labTex": format!(r#"<link rel="stylesheet" href="{KATEX}/katex.min.css"><script src="{KATEX}/katex.min.js"></script>"#),
+        "labTex": format!(
+            r#"<link rel="stylesheet" href="{KATEX}/katex.min.css" integrity="{KATEX_CSS_SRI}" {CDN_ATTRS}><script src="{KATEX}/katex.min.js" integrity="{KATEX_JS_SRI}" {CDN_ATTRS}></script>"#
+        ),
         "labCss": include_str!("../shell/labkit.css"),
         "labJs": include_str!("../shell/labkit.js"),
     }))
@@ -688,6 +710,32 @@ mod tests {
         assert!(html.contains(r#"<a class="brand" href="https://example.test/paper-bro/">"#), "brand link missing");
         // The quiz footer's own "Back to top" is the link that scrolls up.
         assert!(html.contains(r##"<a class="next" href="#top">Back to top ↑</a>"##));
+    }
+
+    #[test]
+    fn every_file_from_the_cdn_is_pinned_and_checked_against_a_digest() {
+        let (meta, outline, lessons) = crate::sample::course();
+        let c = Course { meta: &meta, outline: &outline, lessons: &lessons, figures: &[], model: "m", built: "today" };
+        let page = assemble(&c, "https://example.test");
+        let labs: Value = serde_json::from_str(&data(&c, "https://example.test", None)).unwrap();
+        let tag = Regex::new(r#"<(?:link|script)\b[^>]*"https://cdn\.jsdelivr\.net/npm/([^"]+)"[^>]*>"#).unwrap();
+        let pinned = Regex::new(r"^(?:@[\w-]+/)?[\w-]+@\d+\.\d+\.\d+/").unwrap();
+        for (whose, html, count) in [
+            ("the page", page.as_str(), 7),
+            ("a lab", labs["labHead"].as_str().unwrap(), 4),
+            ("a lab with math", labs["labTex"].as_str().unwrap(), 2),
+        ] {
+            let tags: Vec<_> = tag.captures_iter(html).collect();
+            assert_eq!(tags.len(), count, "{whose}: {html}");
+            for t in tags {
+                let (all, path) = (&t[0], &t[1]);
+                assert!(pinned.is_match(path), "{whose}: {path} is not an exact version");
+                // jsDelivr makes the .min.css of a package that doesn't ship one,
+                // and may remake it: no digest would hold.
+                assert!(!(path.starts_with("@fontsource/") && path.ends_with(".min.css")), "{whose}: {path} is generated by the CDN");
+                assert!(all.contains(r#"integrity="sha384-"#) && all.contains(r#"crossorigin="anonymous""#), "{whose}: {all}");
+            }
+        }
     }
 
     #[test]
