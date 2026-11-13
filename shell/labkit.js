@@ -50,6 +50,15 @@
     var a = Math.abs(v);
     return a !== 0 && (a >= 1e4 || a < 1e-2) ? v.toExponential(1) : String(+v.toFixed(3));
   };
+  // A canvas is silent to a screen reader. One the kit drew on gets a name
+  // saying what it shows, unless the lab named it itself.
+  var describe = function (cv, text) {
+    if (cv.hasAttribute('aria-label') && !cv.hasAttribute('data-pb-named')) return;
+    cv.setAttribute('role', 'img');
+    cv.setAttribute('aria-label', text);
+    cv.setAttribute('data-pb-named', '');
+  };
+  var list = function (xs) { return xs.filter(function (x) { return x !== '' && x != null; }).join(', '); };
 
   var PB = {
     color: {
@@ -145,6 +154,9 @@
           lx += 26 + ctx.measureText(s.label).width;
         });
       }
+      var axes = ay.label && ax.label ? ay.label + ' against ' + ax.label : ay.label || ax.label;
+      var lines = list(named.map(function (s) { return s.label; }));
+      describe(cv, 'Chart' + (axes ? ' of ' + axes : '') + (lines ? ', showing ' + lines : ''));
       return { x: X, y: Y, ctx: ctx };
     },
 
@@ -174,6 +186,8 @@
       ctx.fillStyle = '#52525B';
       rows.forEach(function (s, i) { ctx.textAlign = 'right'; ctx.textBaseline = 'middle'; ctx.fillText(String(s), L - 6, T + i * ch + ch / 2); });
       cols.forEach(function (s, j) { ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'; ctx.fillText(String(s), L + j * cw + cw / 2, T - 6); });
+      var r = list(rows.map(String)), k = list(cols.map(String));
+      describe(cv, 'Heatmap of ' + m.length + ' rows by ' + m[0].length + ' columns' + (r ? '; rows ' + r : '') + (k ? '; columns ' + k : ''));
     },
 
     // Math in a lab: PB.tex(element, 'x^2', displayMode)
