@@ -251,18 +251,20 @@ pub async fn hold(pool: &PgPool, id: &str, error: &str, usage: &Value) -> Result
 }
 
 /// Stop a course that keeps being started without finishing or failing
-/// (pipeline::process). No attempt ran to report a cost, so what is stored
-/// stays.
+/// (pipeline::process). No attempt ran to report a cost, so the stored cost
+/// stays. What was read of the paper goes, as with any failure that is final.
 pub async fn give_up(pool: &PgPool, id: &str, error: &str) -> Result<()> {
     sqlx::query("UPDATE courses SET status = 'failed', error = $2, lease_until = NULL, finished_at = now() WHERE arxiv_id = $1")
         .bind(id)
         .bind(error)
         .execute(pool)
         .await?;
-    Ok(())
+    drop_paper(pool, id).await
 }
 
 /// Record a failure. `retry` puts it back in the queue for another attempt.
+/// A failure that is final drops what was read of the paper (arxiv.rs): a
+/// later try reads it from arXiv again.
 pub async fn fail(pool: &PgPool, id: &str, error: &str, retry: bool, usage: &Value) -> Result<()> {
     sqlx::query(
         "UPDATE courses SET status = CASE WHEN $3 THEN 'queued' ELSE 'failed' END,
@@ -276,6 +278,9 @@ pub async fn fail(pool: &PgPool, id: &str, error: &str, retry: bool, usage: &Val
     .bind(usage)
     .execute(pool)
     .await?;
+    if !retry {
+        drop_paper(pool, id).await?;
+    }
     Ok(())
 }
 
@@ -356,8 +361,8 @@ pub async fn put_artifact(pool: &PgPool, id: &str, key: &str, body: &str) -> Res
     Ok(())
 }
 
-/// Once a course is ready, drop the paper text (arXiv serves it again for
-/// free) and the reviews. The outline and lessons stay: they are what lets a
+/// Once a course is ready, drop the paper (arXiv serves it again for free)
+/// and the reviews. The outline and lessons stay: they are what lets a
 /// course be re-assembled with a newer shell without paying the model again.
 pub async fn prune_artifacts(pool: &PgPool, id: &str) -> Result<()> {
     sqlx::query("DELETE FROM course_artifacts WHERE arxiv_id = $1 AND (key = 'paper' OR key LIKE 'review:%')")
@@ -365,6 +370,26 @@ pub async fn prune_artifacts(pool: &PgPool, id: &str) -> Result<()> {
         .execute(pool)
         .await?;
     Ok(())
+}
+
+async fn drop_paper(pool: &PgPool, id: &str) -> Result<()> {
+    sqlx::query("DELETE FROM course_artifacts WHERE arxiv_id = $1 AND key = 'paper'").bind(id).execute(pool).await?;
+    Ok(())
+}
+
+/// Drop what was read of every PDF-only paper, the PDF or pictures of its
+/// pages, whose course isn't being built right now (arxiv.rs). A course
+/// waiting in the queue reads it from arXiv again when it starts. The
+/// server runs this every hour (main.rs); it returns how many it dropped.
+pub async fn sweep_pdfs(pool: &PgPool) -> Result<u64> {
+    let done = sqlx::query(
+        "DELETE FROM course_artifacts a USING papers p, courses c
+         WHERE a.key = 'paper' AND p.arxiv_id = a.arxiv_id AND c.arxiv_id = a.arxiv_id
+           AND p.source_kind = 'pdf' AND c.status <> 'running'",
+    )
+    .execute(pool)
+    .await?;
+    Ok(done.rows_affected())
 }
 
 /// Courses finished by a dry run (`PUBLISH=0`) only exist as local previews.
