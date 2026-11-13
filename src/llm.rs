@@ -1,6 +1,6 @@
 //! Chat completions from any OpenAI-compatible server, or from one that speaks
 //! Google's Gemini API (`config::Endpoint` says which), by hand on reqwest.
-//! Built against Muse Spark Open, and the Gemini side against Gemini 4 Argon
+//! Built against Muse Spark Open, and the Gemini side against Gemini 4 Carbon
 //! behind a proxy.
 //!
 //! No agent framework: every pipeline step is one call, and what matters is
@@ -702,7 +702,7 @@ mod tests {
         assert_eq!(resp.text().await.unwrap(), "ok");
     }
 
-    /// A Gemini stream as a proxy for Gemini 4 Argon sent it: a summary of the
+    /// A Gemini stream as a proxy for Gemini 4 Carbon sent it: a summary of the
     /// thinking, the answer in pieces, a part that only carries a thought
     /// signature, and usage on the last event only (empty before), with a
     /// cached count and the thinking counted apart from the answer.
