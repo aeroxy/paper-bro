@@ -69,7 +69,7 @@ impl Endpoint {
     /// `/models/<model>:streamGenerateContent?alt=sse`. Made for each call
     /// because a Gemini address names the model, and the model can change
     /// (`fallback_model`). A model's own slashes stay slashes, so a proxy's
-    /// `provider/gemini-4-argon-high` is two segments of the path.
+    /// `provider/gemini-4-carbon-high` is two segments of the path.
     pub fn url(&self, model: &str) -> Result<String> {
         let mut url = reqwest::Url::parse(&self.base).with_context(|| format!("LLM_BASE_URL={} isn't a URL", self.base))?;
         let mut path = url.path_segments_mut().map_err(|_| anyhow::anyhow!("LLM_BASE_URL={} can't carry a path", self.base))?;
@@ -355,8 +355,8 @@ mod tests {
             e
         };
         // A provider in front of the model keeps its slash: that is how a proxy routes it.
-        let e = gemini("http://127.0.0.1:7777/v1beta", "provider/gemini-4-argon-high");
-        assert_eq!(e.url(&e.model).unwrap(), "http://127.0.0.1:7777/v1beta/models/provider/gemini-4-argon-high:streamGenerateContent?alt=sse");
+        let e = gemini("http://127.0.0.1:7777/v1beta", "provider/gemini-4-carbon-high");
+        assert_eq!(e.url(&e.model).unwrap(), "http://127.0.0.1:7777/v1beta/models/provider/gemini-4-carbon-high:streamGenerateContent?alt=sse");
         // The model is in the address, so the fallback has an address of its own.
         assert_eq!(e.url("provider/gemini-3.1-pro-low").unwrap(), "http://127.0.0.1:7777/v1beta/models/provider/gemini-3.1-pro-low:streamGenerateContent?alt=sse");
         let e = gemini("https://generativelanguage.googleapis.com/v1beta/", "gemini-3-pro-preview");
