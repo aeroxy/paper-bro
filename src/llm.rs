@@ -155,7 +155,14 @@ pub struct Request<'a> {
 
 impl Llm {
     pub fn new(endpoint: &Endpoint, slots: usize) -> Result<Self> {
-        let http = reqwest::Client::builder().connect_timeout(Duration::from_secs(20)).build()?;
+        // No redirects. reqwest would follow one to another host with the
+        // Gemini key (it drops only `Authorization`) and, on a 307 or 308, the
+        // paper. A model API has no reason to redirect: one that does is set
+        // up wrong, and its call fails as rejected.
+        let http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(20))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
         Ok(Self { http, endpoint: endpoint.clone(), model: Mutex::new(endpoint.model.clone()), slots: Semaphore::new(slots) })
     }
 
@@ -744,6 +751,23 @@ mod tests {
         let base = format!("{}beta", serve(app).await);
         let model = "provider/gemini-x-high".to_string();
         (Endpoint { name: "stand-in".into(), api: Api::Gemini, base, key: "gk".into(), model: model.clone(), fallback_model: model }, asked)
+    }
+
+    #[tokio::test]
+    async fn a_redirect_is_not_followed_so_the_key_and_the_paper_go_nowhere_else() {
+        // Where the redirect points: a server that would answer, and records what reached it.
+        let (elsewhere, asked) = gemini_stand_in(GEMINI_STREAM).await;
+        let target = elsewhere.url(&elsewhere.model).unwrap();
+        let app = Router::new().fallback(move || {
+            let target = target.clone();
+            async move { (StatusCode::TEMPORARY_REDIRECT, [("location", target)]) }
+        });
+        let endpoint = Endpoint { base: format!("{}beta", serve(app).await), ..elsewhere };
+        let llm = Llm::new(&endpoint, 1).unwrap();
+        let err = llm.chat(&request(vec![json!({"role": "user", "content": "the paper"})])).await.unwrap_err();
+        assert!(err.to_string().contains("stand-in HTTP 307"), "{err:#}");
+        let asked = asked.lock().unwrap();
+        assert!(asked.is_empty(), "the call went where the redirect pointed, with the key {:?}", asked[0].key);
     }
 
     #[tokio::test]
