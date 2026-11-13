@@ -520,8 +520,8 @@ pub fn assemble(c: &Course, origin: &str) -> String {
         .lessons
         .iter()
         .enumerate()
-        .map(|(i, l)| format!(r##"<a href="#l{n}"><span class="n">{n:02}</span>{t}<span class="ck">✓</span></a>"##, n = i + 1, t = esc(&l.nav_title)))
-        .chain(std::iter::once(format!(r##"<a href="#lq"><span class="n">{:02}</span>Final quiz<span class="ck">✓</span></a>"##, n + 1)))
+        .map(|(i, l)| format!(r##"<a href="#l{n}"><span class="n">{n:02}</span>{t}<span class="ck" aria-hidden="true">✓</span></a>"##, n = i + 1, t = esc(&l.nav_title)))
+        .chain(std::iter::once(format!(r##"<a href="#lq"><span class="n">{:02}</span>Final quiz<span class="ck" aria-hidden="true">✓</span></a>"##, n + 1)))
         .collect();
     let chips: String = o.chips.iter().map(|c| format!(r#"<span class="chip">{}</span>"#, esc(c))).collect();
     let tagline = esc(&o.tagline).replace("\\n", "<br>").replace('\n', "<br>");
@@ -531,7 +531,7 @@ pub fn assemble(c: &Course, origin: &str) -> String {
 {LOGO}
 <div class="grid-bg"></div>
 <header class="top"><div class="wrap">
-  <a class="brand" href="{home}"><svg class="logo"><use href="#logo"/></svg><span>{course}</span></a>
+  <a class="brand" href="{home}"><svg class="logo" aria-hidden="true"><use href="#logo"/></svg><span>{course}</span></a>
   <div class="prog"><div class="bar"><i id="progBar"></i></div><span id="progTxt">0 / {total} done</span></div>
 </div></header>
 <main class="wrap">
@@ -688,6 +688,19 @@ mod tests {
         assert!(html.contains(r#"<a class="brand" href="https://example.test/paper-bro/">"#), "brand link missing");
         // The quiz footer's own "Back to top" is the link that scrolls up.
         assert!(html.contains(r##"<a class="next" href="#top">Back to top ↑</a>"##));
+    }
+
+    #[test]
+    fn decoration_is_hidden_from_screen_readers() {
+        let (meta, outline, lessons) = crate::sample::course();
+        let c = Course { meta: &meta, outline: &outline, lessons: &lessons, figures: &[], model: "m", built: "today" };
+        let html = assemble(&c, "https://example.test");
+        assert!(html.contains(r#"<svg class="logo" aria-hidden="true">"#), "the brand link's logo is read out");
+        // Each sidebar tick starts silent, like it starts invisible; the runtime
+        // lets a done lesson's tick be read.
+        let ticks = html.matches(r#"<span class="ck""#).count();
+        assert_eq!(ticks, outline.lessons.len() + 1);
+        assert_eq!(html.matches(r#"<span class="ck" aria-hidden="true">✓</span>"#).count(), ticks);
     }
 
     #[test]
