@@ -359,12 +359,15 @@
     // A copy keeps KaTeX's MathML, which is what a screen reader reads. Without
     // ids, classes or data attributes it can't be mistaken for the lab's own
     // elements, or updated by them: PB.bindSliders writes into every
-    // [data-show] in the document, and would change the copy at once.
+    // [data-show] in the document, and would change the copy at once. And it
+    // takes no keyboard focus: a note can hold a button or an input (2 of the
+    // 670 published notes do), and its copy would be an invisible tab stop.
     var copy = function (el) {
       var c = el.cloneNode(true);
       [c].concat(Array.prototype.slice.call(c.querySelectorAll('*'))).forEach(function (n) {
         ['id', 'class', 'for', 'name'].forEach(function (a) { n.removeAttribute(a); });
         Array.prototype.slice.call(n.attributes).forEach(function (a) { if (a.name.indexOf('data-') === 0) n.removeAttribute(a.name); });
+        n.setAttribute('tabindex', '-1');
       });
       return c;
     };
