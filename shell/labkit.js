@@ -365,10 +365,15 @@
       });
       return c;
     };
+    // Emptied now and filled in a later task, so that a note reading the same
+    // as the last one read is still a change, and is read again.
+    var fill = 0;
     var say = function () {
-      live.textContent = '';
-      notes.forEach(function (n) { if (n.isConnected) live.appendChild(copy(n)); });
+      var copies = notes.filter(function (n) { return n.isConnected; }).map(copy);
       notes = []; first = 0;
+      live.textContent = '';
+      clearTimeout(fill);
+      fill = setTimeout(function () { copies.forEach(function (c) { live.appendChild(c); }); }, 100);
     };
     new MutationObserver(function (records) {
       var now = Date.now(), moved = false;
