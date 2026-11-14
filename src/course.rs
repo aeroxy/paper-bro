@@ -552,16 +552,17 @@ static PARAGRAPH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<p\b[^>]*>
 /// It is how money written with `$` shows, despite the prompt: KaTeX pairs the
 /// signs, so "$0.80 vs 69.0% at $3.06" sets "0.80 vs 69.0% at " as a formula,
 /// and its bare `%` starts a TeX comment that drops the rest. No KaTeX error is
-/// raised. Real math starting with a number rarely runs on into words outside
-/// `\text{}`, or is just an amount and a sign before the next amount
-/// ("$8.84 → $5.74" sets "8.84 → "); checked against every formula in the 52
-/// published courses.
+/// raised. Such a formula runs from an amount, straight after its `$`, to the
+/// space before the next `$`, and holds a word outside `\text{}` or is just
+/// an amount and a sign ("$8.84 → $5.74" sets "8.84 → "). Real math that
+/// starts with a number seldom ends in a space, so a product such as `2 ab` is
+/// left alone. Checked against every formula in the 52 published courses: the
+/// money spans all end in a space, and nothing else is flagged.
 pub fn reads_like_prose(tex: &str) -> bool {
     if BARE_PERCENT.is_match(tex) {
         return true;
     }
-    // Money's amount comes straight after its `$`.
-    if !tex.starts_with(|c: char| c.is_ascii_digit()) {
+    if !tex.starts_with(|c: char| c.is_ascii_digit()) || !tex.ends_with(char::is_whitespace) {
         return false;
     }
     PROSE_WORD.is_match(&MATH_WORDS.replace_all(tex, " ")) || AMOUNT_AND_SIGN.is_match(tex)
@@ -806,10 +807,10 @@ mod tests {
             "8.84 → ",
             "3.75 per task on average versus ",
             "60 on a sneaker ad. If the hidden market price that day is ",
-            "1 to",
+            "1 to ",
             "2, … inform its guess at ",
             "10.” One started with ",
-            "1,000. Same",
+            "1,000. Same ",
             "120 then fell to ",
         ] {
             assert!(reads_like_prose(tex), "{tex:?} should read like prose");
@@ -837,6 +838,9 @@ mod tests {
             // Valid formulas that only end in a space.
             "2x + 1 ",
             "3 + 4 ",
+            // Products, words of variables after a number but no trailing space.
+            "2 ab",
+            r"2 \sin xy",
         ] {
             assert!(!reads_like_prose(tex), "{tex:?} is real math");
         }
