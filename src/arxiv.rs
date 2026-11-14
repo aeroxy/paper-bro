@@ -117,6 +117,8 @@ const TIMEOUT: Duration = Duration::from_secs(90);
 /// The lock is held for a whole request, so a hung one stalls every other
 /// arXiv call. The license is optional, so its lookup gives up much sooner.
 const LICENSE_TIMEOUT: Duration = Duration::from_secs(10);
+/// An abstract page for a visitor's lookup, with the export API behind it.
+const PAGE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What came back from a paced GET.
 pub enum Fetched {
@@ -156,10 +158,21 @@ impl Client {
         result
     }
 
-    /// Metadata from the export API, without the license, which takes a
-    /// second request that a visitor shouldn't wait for (see `license`).
-    /// `None` when arXiv has no such paper.
+    /// Metadata, without the license (see `license`). `None` when arXiv has no
+    /// such paper. A visitor waits for this, so it comes from the abstract
+    /// page, which answers in a tenth of a second: the export API can take
+    /// half a minute and then refuse with a 429 under arXiv's own load (seen
+    /// 2026-11-14, with nothing else calling it). The API stays as the
+    /// fallback for a page that fails or no longer parses.
     pub async fn meta(&self, id: &str) -> Result<Option<Meta>> {
+        match self.get(&abs_url(id), PAGE_TIMEOUT).await {
+            Ok(Fetched::NotFound) => return Ok(None),
+            Ok(Fetched::Ok { body, .. }) => match parse_abs(&String::from_utf8_lossy(&body), id) {
+                Some(meta) => return Ok(Some(meta)),
+                None => log::warn!("the abstract page of {id} didn't parse; asking arXiv's export API"),
+            },
+            Err(e) => log::warn!("the abstract page of {id} didn't load ({e:#}); asking arXiv's export API"),
+        }
         let url = format!("https://export.arxiv.org/api/query?id_list={id}&max_results=1");
         let Fetched::Ok { body, .. } = self.get(&url, TIMEOUT).await? else { return Ok(None) };
         parse_atom(&String::from_utf8_lossy(&body), id)
@@ -246,6 +259,51 @@ fn parse_atom(xml: &str, id: &str) -> Result<Option<Meta>> {
     }))
 }
 
+/// The metadata on an abstract page: the `citation_*` tags for title, authors
+/// and abstract, the subjects cell for categories (primary first), and the
+/// submission history for the latest version and when v1 was submitted, which
+/// is what the export API calls `published`. `None` if any of the title, the
+/// abstract or the version is missing, so the API is asked instead.
+fn parse_abs(html: &str, id: &str) -> Option<Meta> {
+    let doc = Html::parse_document(html);
+    let tag = |name: &str| -> Vec<String> {
+        let sel = Selector::parse(&format!(r#"meta[name="{name}"]"#)).unwrap();
+        doc.select(&sel).filter_map(|m| m.value().attr("content")).map(squash).collect()
+    };
+    let title = tag("citation_title").into_iter().next().filter(|t| !t.is_empty())?;
+    let abstract_ = tag("citation_abstract").into_iter().next().filter(|a| !a.is_empty())?;
+    // "Vaswani, Ashish" is "Ashish Vaswani" in the API; a group name has no comma.
+    let authors = tag("citation_author")
+        .into_iter()
+        .map(|a| match a.split_once(", ") {
+            Some((last, first)) => format!("{first} {last}"),
+            None => a,
+        })
+        .collect();
+    let text = |sel: &str| {
+        let sel = Selector::parse(sel).unwrap();
+        doc.select(&sel).next().map(|e| squash(&e.text().collect::<String>())).unwrap_or_default()
+    };
+    let history = text("div.submission-history");
+    let version = VERSION.captures_iter(&history).filter_map(|c| c[1].parse::<u32>().ok()).max()?;
+    let published = SUBMITTED
+        .captures(&history)
+        .and_then(|c| chrono::NaiveDateTime::parse_from_str(&c[1], "%a, %d %b %Y %H:%M:%S").ok())
+        .map(|t| t.and_utc());
+    let mut categories: Vec<String> = Vec::new();
+    for c in CATEGORY.captures_iter(&text("td.tablecell.subjects")) {
+        if !categories.iter().any(|k| k == &c[1]) {
+            categories.push(c[1].to_string());
+        }
+    }
+    Some(Meta { id: id.to_string(), version, title, authors, abstract_, categories, license: None, published })
+}
+
+static VERSION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[v(\d+)\]").unwrap());
+static SUBMITTED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[v1\] (\w{3}, \d{1,2} \w{3} \d{4} \d{2}:\d{2}:\d{2}) UTC").unwrap());
+/// A subject's code, in brackets after its name: "Machine Learning (cs.LG)".
+static CATEGORY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\(([a-z-]+(?:\.[A-Za-z-]+)?)\)").unwrap());
+
 /// The license link on an abstract page: `<div class="abs-license"><a href=…>`.
 fn parse_license(html: &str) -> Option<String> {
     let doc = Html::parse_document(html);
@@ -324,6 +382,35 @@ mod tests {
         assert_eq!(m.authors, vec!["Ashish Vaswani", "Noam Shazeer"]);
         assert_eq!(m.categories, vec!["cs.CL", "cs.LG"]);
         assert!(m.published.is_some());
+    }
+
+    #[test]
+    fn abstract_page_parsing() {
+        // Trimmed from arxiv.org/abs/1706.03762, plus a group author.
+        let page = r#"<html><head>
+<meta name="citation_title" content="Attention Is   All You Need" />
+<meta name="citation_author" content="Vaswani, Ashish" />
+<meta name="citation_author" content="Gomez, Aidan N." />
+<meta name="citation_author" content="The ATLAS Collaboration" />
+<meta name="citation_date" content="2017/06/12" />
+<meta name="citation_abstract" content="The dominant sequence transduction models &amp; more." />
+</head><body>
+<div class="dateline">[Submitted on 12 Jun 2017 (<a href="https://arxiv.org/abs/1706.03762v1">v1</a>), last revised 2 Aug 2023 (this version, v7)]</div>
+<table><tr><td class="tablecell label">Subjects:</td><td class="tablecell subjects"><span class="primary-subject">Computation and Language (cs.CL)</span>; Machine Learning (cs.LG)</td></tr></table>
+<div class="submission-history"><h2>Submission history</h2> From: Llion Jones [<a href="/show-email/x/1706.03762">view email</a>]<br/>
+<strong><a href="/abs/1706.03762v1" rel="nofollow">[v1]</a></strong> Mon, 12 Jun 2017 17:57:34 UTC (1,102 KB)<br/>
+<strong><a href="/abs/1706.03762v2" rel="nofollow">[v2]</a></strong> Mon, 19 Jun 2017 16:49:45 UTC (1,125 KB)<br/>
+<strong>[v7]</strong> Wed, 2 Aug 2023 00:41:18 UTC (1,124 KB)<br/></div>
+</body></html>"#;
+        let m = parse_abs(page, "1706.03762").unwrap();
+        assert_eq!(m.title, "Attention Is All You Need");
+        assert_eq!(m.authors, ["Ashish Vaswani", "Aidan N. Gomez", "The ATLAS Collaboration"]);
+        assert_eq!(m.abstract_, "The dominant sequence transduction models & more.");
+        assert_eq!(m.categories, ["cs.CL", "cs.LG"]);
+        assert_eq!(m.version, 7);
+        assert_eq!(m.published.unwrap().to_rfc3339(), "2017-06-12T17:57:34+00:00");
+        // Without a title, the export API is asked instead.
+        assert!(parse_abs(&page.replace("citation_title", "x"), "1706.03762").is_none());
     }
 
     #[test]
