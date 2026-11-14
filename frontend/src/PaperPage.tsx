@@ -266,6 +266,8 @@ function ReportForm({ id }: { id: string }) {
       className="card"
       onSubmit={async (e) => {
         e.preventDefault()
+        // Cleared first, so that a failure with the same message is a new alert.
+        setError('')
         setState('sending')
         try {
           await report(id, reason)

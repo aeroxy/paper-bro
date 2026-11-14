@@ -13,6 +13,8 @@ export function Home() {
   const navigate = useNavigate()
   const [input, setInput] = useState('')
   const [error, setError] = useState('')
+  // Each failed try is a new alert, read out again even with the same words.
+  const [tries, setTries] = useState(0)
   const [courses, setCourses] = useState<CourseCard[] | null>(null)
 
   useEffect(() => {
@@ -23,6 +25,7 @@ export function Home() {
     e.preventDefault()
     const id = parseId(input)
     if (!id) {
+      setTries((n) => n + 1)
       setError("That doesn't look like an arXiv paper. Paste a link like arxiv.org/abs/1706.03762, or just the id.")
       return
     }
@@ -60,7 +63,7 @@ export function Home() {
           <button className="btn-accent h-12 justify-center px-6 text-[14px]">Open the course →</button>
         </form>
         {error && (
-          <p id="paper-error" role="alert" className="mt-2.5 text-[13.5px] text-danger-strong">
+          <p key={tries} id="paper-error" role="alert" className="mt-2.5 text-[13.5px] text-danger-strong">
             {error}
           </p>
         )}
