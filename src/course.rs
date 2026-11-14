@@ -523,6 +523,31 @@ pub fn plan_problems(o: &Outline) -> Vec<String> {
     problems
 }
 
+/// A lesson can run off the rails past its end too, and the reviewer let three
+/// through: leaked prompt text with the quiz and its answers (2610.35959),
+/// "End." over and over (2609.09345), over a hundred one-line send-offs to the
+/// lab (2307.11760). They ran to 1,251 to 2,071 words, and two had 41 and 50
+/// paragraphs of three words or fewer. The other 414 published lessons reach
+/// 890 words, against the 250 to 600 asked for, and have at most one.
+pub fn lesson_problems(l: &Lesson) -> Vec<String> {
+    let words = |html: &str| TAG.replace_all(html, " ").split_whitespace().count();
+    let mut problems = Vec::new();
+    let n = words(&l.prose_html);
+    if n > MAX_LESSON_WORDS {
+        problems.push(format!("the prose is {n} words, over {MAX_LESSON_WORDS}"));
+    }
+    let tiny = PARAGRAPH.captures_iter(&l.prose_html).filter(|p| words(&p[1]) <= 3).count();
+    if tiny > MAX_TINY_PARAGRAPHS {
+        problems.push(format!("the prose has {tiny} paragraphs of three words or fewer"));
+    }
+    problems
+}
+
+const MAX_LESSON_WORDS: usize = 1000;
+const MAX_TINY_PARAGRAPHS: usize = 5;
+static TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]*>").unwrap());
+static PARAGRAPH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<p\b[^>]*>(.*?)</p>").unwrap());
+
 /// Whether a formula's TeX reads like a stretch of a sentence rather than math.
 /// It is how money written with `$` shows, despite the prompt: KaTeX pairs the
 /// signs, so "$0.80 vs 69.0% at $3.06" sets "0.80 vs 69.0% at " as a formula,
@@ -810,6 +835,19 @@ mod tests {
         }
         // A bare % drops the rest of the formula, whatever it is.
         assert!(reads_like_prose("x = 50% of y"));
+    }
+
+    #[test]
+    fn a_lesson_that_runs_on_or_loops_is_flagged() {
+        let (_, _, lessons) = crate::sample::course();
+        assert!(lessons.iter().all(|l| lesson_problems(l).is_empty()));
+        let mut l = lessons[0].clone();
+        l.prose_html = format!("<p>{}</p>", "word ".repeat(1001));
+        assert_eq!(lesson_problems(&l), ["the prose is 1001 words, over 1000"]);
+        l.prose_html = format!("<p>A paragraph about the idea itself.</p>{}", "<p>End.</p>".repeat(6));
+        assert_eq!(lesson_problems(&l), ["the prose has 6 paragraphs of three words or fewer"]);
+        l.prose_html = format!("<p>A paragraph about the idea itself.</p>{}", "<p>Try it.</p>".repeat(5));
+        assert!(lesson_problems(&l).is_empty(), "a few short lines are fine");
     }
 
     #[test]

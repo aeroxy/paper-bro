@@ -820,8 +820,8 @@ impl Job {
     }
 
     /// What still needs fixing, by lesson index: browser QA failures, banned
-    /// APIs, reviewer findings, KaTeX errors traced back to a lesson, and
-    /// formulas that read like a sentence.
+    /// APIs, reviewer findings, KaTeX errors traced back to a lesson, formulas
+    /// that read like a sentence, and prose that ran on past the lesson.
     fn problems(&self, lessons: &[Lesson], report: &qa::Report, review: Option<&Review>, which: &[usize]) -> BTreeMap<usize, Vec<String>> {
         let mut out: BTreeMap<usize, Vec<String>> = BTreeMap::new();
         for &i in which {
@@ -846,6 +846,11 @@ impl Job {
                 }
             }
             p.extend(lesson_math(report, i));
+            p.extend(
+                course::lesson_problems(&lessons[i])
+                    .into_iter()
+                    .map(|why| format!("{why}: write only this lesson, 250 to 600 words, ending with the lead into the lab")),
+            );
             if !p.is_empty() {
                 out.insert(i, p);
             }

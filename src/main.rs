@@ -237,6 +237,14 @@ async fn republish(id: &str) -> Result<()> {
     if !problems.is_empty() {
         bail!("the stored plan is broken ({}); fix its outline first, nothing was published", problems.join("; "));
     }
+    let broken: Vec<String> = lessons
+        .iter()
+        .enumerate()
+        .flat_map(|(i, l)| course::lesson_problems(l).into_iter().map(move |p| format!("lesson {}: {p}", i + 1)))
+        .collect();
+    if !broken.is_empty() {
+        bail!("a stored lesson ran on ({}); fix it first, nothing was published", broken.join("; "));
+    }
     // Figures come from the paper's HTML rendering, which arXiv serves again.
     let figures = match app.arxiv.html(id, meta.version).await? {
         Some((url, html)) => ingest::from_latexml(&url, &html)?.figures,
