@@ -529,14 +529,20 @@ pub fn plan_problems(o: &Outline) -> Vec<String> {
 /// lab (2307.11760). They ran to 1,251 to 2,071 words, and two had 41 and 50
 /// paragraphs of three words or fewer. The other 414 published lessons reach
 /// 890 words, against the 250 to 600 asked for, and have at most one.
+///
+/// Words are counted in the parsed text, as a reader sees it: a bare `<` in
+/// prose ("a < b") is text there, where stripping tags by pattern would take
+/// every word up to the next `>` with it.
 pub fn lesson_problems(l: &Lesson) -> Vec<String> {
-    let words = |html: &str| TAG.replace_all(html, " ").split_whitespace().count();
+    let doc = scraper::Html::parse_fragment(&l.prose_html);
+    let words = |e: scraper::ElementRef| e.text().collect::<Vec<_>>().join(" ").split_whitespace().count();
     let mut problems = Vec::new();
-    let n = words(&l.prose_html);
+    let n = words(doc.root_element());
     if n > MAX_LESSON_WORDS {
         problems.push(format!("the prose is {n} words, over {MAX_LESSON_WORDS}"));
     }
-    let tiny = PARAGRAPH.captures_iter(&l.prose_html).filter(|p| words(&p[1]) <= 3).count();
+    let p = scraper::Selector::parse("p").unwrap();
+    let tiny = doc.select(&p).filter(|e| words(*e) <= 3).count();
     if tiny > MAX_TINY_PARAGRAPHS {
         problems.push(format!("the prose has {tiny} paragraphs of three words or fewer"));
     }
@@ -545,8 +551,6 @@ pub fn lesson_problems(l: &Lesson) -> Vec<String> {
 
 const MAX_LESSON_WORDS: usize = 1000;
 const MAX_TINY_PARAGRAPHS: usize = 5;
-static TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]*>").unwrap());
-static PARAGRAPH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<p\b[^>]*>(.*?)</p>").unwrap());
 
 /// Whether a formula's TeX reads like a stretch of a sentence rather than math.
 /// It is how money written with `$` shows, despite the prompt: KaTeX pairs the
@@ -859,6 +863,9 @@ mod tests {
         assert_eq!(lesson_problems(&l), ["the prose has 6 paragraphs of three words or fewer"]);
         l.prose_html = format!("<p>A paragraph about the idea itself.</p>{}", "<p>Try it.</p>".repeat(5));
         assert!(lesson_problems(&l).is_empty(), "a few short lines are fine");
+        // A less-than sign, bare or encoded, is text and hides no words.
+        l.prose_html = format!("<p>When a < b and c &lt; d, {}</p>", "word ".repeat(1000));
+        assert_eq!(lesson_problems(&l), ["the prose is 1008 words, over 1000"]);
     }
 
     #[test]
