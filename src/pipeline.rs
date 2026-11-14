@@ -528,15 +528,7 @@ impl Job {
         let _ = self.save("review:1", &review).await;
         let mut quiz_findings = review.as_ref().map(|r| r.quiz_findings.clone()).unwrap_or_default();
         quiz_findings.extend(quiz_math(&report));
-        if !quiz_findings.is_empty() {
-            match self.fix_quiz(&paper_msg, &outline, &quiz_findings).await {
-                Ok(q) => {
-                    outline.quiz = q;
-                    self.save("outline", &outline).await?;
-                }
-                Err(e) => self.without("the quiz fix", e).await?,
-            }
-        }
+        self.mend_quiz(&paper_msg, &mut outline, &quiz_findings).await?;
         let mut problems = self.problems(&lessons, &report, review.as_ref(), &all);
         let mut last = report;
         for round in 1..=2 {
@@ -576,8 +568,13 @@ impl Job {
                 }
             }
             last = self.qa(&meta, &outline, &lessons, &paper, &which).await?;
-            problems = self.problems(&lessons, &last, None, &which);
+            // What the whole page shows (formulas, runaway prose) can be in any
+            // lesson, and may show only now: the first check skips the page
+            // when a lab hangs. So every lesson with a lab is looked at again,
+            // with lab results only from the labs just tested; the quiz too.
+            problems = self.problems(&lessons, &last, None, &labs_to_test(&lessons));
             problems.extend(unfixed);
+            self.mend_quiz(&paper_msg, &mut outline, &quiz_math(&last)).await?;
         }
         // Whatever still fails in the browser ships without its lab; the
         // lesson's prose stays. Anything else left over is only logged.
@@ -797,6 +794,22 @@ impl Job {
         };
         let r: Review = self.ask(&req).await?;
         Ok(r)
+    }
+
+    /// Rewrite the quiz when something was found wrong with it. A fix that
+    /// fails leaves the quiz as it was.
+    async fn mend_quiz(&self, paper_msg: &Value, outline: &mut Outline, findings: &[String]) -> Result<()> {
+        if findings.is_empty() {
+            return Ok(());
+        }
+        match self.fix_quiz(paper_msg, outline, findings).await {
+            Ok(q) => {
+                outline.quiz = q;
+                self.save("outline", &*outline).await?;
+            }
+            Err(e) => self.without("the quiz fix", e).await?,
+        }
+        Ok(())
     }
 
     async fn fix_quiz(&self, paper_msg: &Value, outline: &Outline, findings: &[String]) -> Result<Vec<QuizItem>> {
