@@ -529,16 +529,23 @@ impl Job {
         let _ = self.save("review:1", &review).await;
         let mut quiz_findings = review.as_ref().map(|r| r.quiz_findings.clone()).unwrap_or_default();
         quiz_findings.extend(quiz_math(&report));
-        self.mend_quiz(&paper_msg, &mut outline, &quiz_findings).await?;
         let mut problems = self.problems(&lessons, &report, review.as_ref(), &all);
         let mut last = report;
+        // The quiz is fixed at the start of a round, so the round's browser
+        // check sees the fixed quiz too: no fix ships unchecked.
         for round in 1..=2 {
-            if problems.is_empty() {
+            if problems.is_empty() && quiz_findings.is_empty() {
                 break;
             }
             let which: Vec<usize> = problems.keys().copied().collect();
             let list = which.iter().map(|i| (i + 1).to_string()).collect::<Vec<_>>().join(", ");
-            self.stage("repair", &format!("Fixing lesson {list} (round {round} of 2)")).await;
+            let what = match (which.is_empty(), quiz_findings.is_empty()) {
+                (false, true) => format!("lesson {list}"),
+                (true, _) => "the quiz".to_string(),
+                (false, false) => format!("lesson {list} and the quiz"),
+            };
+            self.stage("repair", &format!("Fixing {what} (round {round} of 2)")).await;
+            self.mend_quiz(&paper_msg, &mut outline, &quiz_findings).await?;
             let fixed: Vec<(usize, Result<Lesson>)> = futures::stream::iter(which.clone())
                 .map(|i| {
                     let (outline, paper_msg, lessons, problems) = (&outline, &paper_msg, &lessons, &problems);
@@ -575,7 +582,7 @@ impl Job {
             // with lab results only from the labs just tested; the quiz too.
             problems = self.problems(&lessons, &last, None, &labs_to_test(&lessons));
             problems.extend(unfixed);
-            self.mend_quiz(&paper_msg, &mut outline, &quiz_math(&last)).await?;
+            quiz_findings = quiz_math(&last);
         }
         // Whatever still fails in the browser ships without its lab; the
         // lesson's prose stays. Anything else left over is only logged.
@@ -589,6 +596,9 @@ impl Job {
             }
             let what = if lab_broken { "lab dropped" } else { "open after two rounds" };
             self.note(&format!("lesson {} ({what}): {}", i + 1, p.join("; "))).await;
+        }
+        if !quiz_findings.is_empty() {
+            self.note(&format!("the quiz (open after two rounds): {}", quiz_findings.join("; "))).await;
         }
 
         // 7. Publish.
