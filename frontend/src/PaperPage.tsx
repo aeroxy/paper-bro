@@ -41,6 +41,15 @@ export function PaperPage() {
 
   useEffect(load, [load])
 
+  // arXiv can take a while to answer, so after a few seconds say so rather
+  // than look stuck.
+  const [slow, setSlow] = useState(false)
+  useEffect(() => {
+    setSlow(false)
+    const t = setTimeout(() => setSlow(true), 5000)
+    return () => clearTimeout(t)
+  }, [id])
+
   // A failed build can be tried again an hour after it stopped (src/web.rs).
   // Ask again then, so the button appears without a reload.
   const retryAt = paper && !paper.retryable ? paper.retry_at : null
@@ -52,7 +61,13 @@ export function PaperPage() {
 
   if (!id) return <Notice title="That isn't an arXiv paper id." body={`“${raw}” doesn't look like one. Try 1706.03762 or an arxiv.org link.`} />
   if (error) return <Notice title="Something's not right." body={error} />
-  if (!paper) return <p className="pt-16 text-[14px] text-fg-3">Looking up arXiv:{id}…</p>
+  if (!paper)
+    return (
+      <div className="pt-16" role="status">
+        <p className="text-[14px] text-fg-3">Looking up arXiv:{id}…</p>
+        {slow && <p className="mt-2 text-[13.5px] text-fg-3">arXiv is slow to answer right now. This can take up to a minute.</p>}
+      </div>
+    )
 
   const start = async () => {
     setBusy(true)
