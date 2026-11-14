@@ -183,7 +183,7 @@ document.addEventListener('DOMContentLoaded', function () {
     var answered = {};
     // What an answer shows next to it is said to screen readers too, through
     // one polite live region. It must exist before anything is put in it.
-    var said = document.createElement('div');
+    var said = document.createElement('div'), saying = 0;
     said.className = 'visually-hidden'; said.setAttribute('role', 'status');
     quiz.parentNode.insertBefore(said, quiz.nextSibling);
     D.quiz.forEach(function (q, i) {
@@ -213,8 +213,7 @@ document.addEventListener('DOMContentLoaded', function () {
           head.className = answered[i] ? 'good' : 'bad';
           fb.textContent = q.explanation; fb.prepend(head); math(fb);
           // A copy, math included: KaTeX's MathML is what a screen reader reads.
-          said.textContent = '';
-          Array.prototype.forEach.call(fb.childNodes, function (n) { said.appendChild(n.cloneNode(true)); });
+          var copy = Array.prototype.map.call(fb.childNodes, function (n) { return n.cloneNode(true); });
           var total = Object.keys(answered).length;
           if (total === D.quiz.length) {
             var score = Object.keys(answered).filter(function (k) { return answered[k]; }).length;
@@ -223,10 +222,15 @@ document.addEventListener('DOMContentLoaded', function () {
             $('.msg', res).textContent = score === D.quiz.length ? 'Perfect. You really get this paper.'
               : score >= D.quiz.length * 0.7 ? 'Great job: you have the core ideas down.'
               : 'Good start. Revisit the labs for the questions you missed.';
-            said.appendChild(document.createTextNode(' Your score: ' + score + ' of ' + D.quiz.length + '. ' + $('.msg', res).textContent));
+            copy.push(document.createTextNode(' Your score: ' + score + ' of ' + D.quiz.length + '. ' + $('.msg', res).textContent));
             markDone('lq');
             res.scrollIntoView({ behavior: REDUCED ? 'auto' : 'smooth', block: 'center' });
           }
+          // Emptied now and filled in a later task, so that feedback reading the
+          // same as the last answer's is still a change, and is read again.
+          said.textContent = '';
+          clearTimeout(saying);
+          saying = setTimeout(function () { copy.forEach(function (n) { said.appendChild(n); }); }, 100);
         });
         opts.appendChild(b);
       });
