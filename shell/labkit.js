@@ -22,14 +22,27 @@
   // A canvas that listens for both a press and a move, pointer or touch, is
   // one the reader drags on: it keeps its touches, unless the lab chose a
   // touch-action of its own. A canvas that is only tapped or hovered still
-  // lets the page scroll.
-  var presses = new WeakSet(), moves = new WeakSet(), listen = EventTarget.prototype.addEventListener;
+  // lets the page scroll. One that isn't on the page yet is decided once it
+  // is, so that a touch-action the lab's stylesheet gives it there is kept.
+  var presses = new WeakSet(), moves = new WeakSet(), waiting = [], watcher = null;
+  var listen = EventTarget.prototype.addEventListener;
+  var hold = function (cv) {
+    if (!cv.style.touchAction && getComputedStyle(cv).touchAction === 'auto') cv.style.touchAction = 'none';
+  };
+  var later = function (cv) {
+    if (waiting.indexOf(cv) < 0) waiting.push(cv);
+    if (watcher) return;
+    watcher = new MutationObserver(function () {
+      waiting = waiting.filter(function (c) { if (!c.isConnected) return true; hold(c); return false; });
+      if (!waiting.length) { watcher.disconnect(); watcher = null; }
+    });
+    watcher.observe(document, { childList: true, subtree: true });
+  };
   EventTarget.prototype.addEventListener = function (type, fn, opts) {
     if (this instanceof HTMLCanvasElement) {
       if (type === 'pointerdown' || type === 'touchstart') presses.add(this);
       if (type === 'pointermove' || type === 'touchmove') moves.add(this);
-      if (presses.has(this) && moves.has(this) && !this.style.touchAction &&
-          (!this.isConnected || getComputedStyle(this).touchAction === 'auto')) this.style.touchAction = 'none';
+      if (presses.has(this) && moves.has(this)) { if (this.isConnected) hold(this); else later(this); }
     }
     return listen.call(this, type, fn, opts);
   };
