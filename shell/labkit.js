@@ -372,10 +372,12 @@
       return c;
     };
     // Emptied now and filled in a later task, so that a note reading the same
-    // as the last one read is still a change, and is read again.
+    // as the last one read is still a change, and is read again. A note that
+    // is gone or hidden, itself or in a hidden panel, has no box and is not
+    // read: some labs hide a note in the modes it doesn't apply to.
     var fill = 0;
     var say = function () {
-      var copies = notes.filter(function (n) { return n.isConnected; }).map(copy);
+      var copies = notes.filter(function (n) { return n.getClientRects().length; }).map(copy);
       notes = []; first = 0;
       live.textContent = '';
       clearTimeout(fill);
