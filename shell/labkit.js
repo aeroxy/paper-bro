@@ -356,12 +356,15 @@
     ['pointerdown', 'click', 'input', 'change', 'keydown'].forEach(function (t) {
       addEventListener(t, function () { touched = Date.now(); }, true);
     });
-    // A copy keeps KaTeX's MathML, which is what a screen reader reads; without
-    // ids and classes it can't be mistaken for the lab's own elements.
+    // A copy keeps KaTeX's MathML, which is what a screen reader reads. Without
+    // ids, classes or data attributes it can't be mistaken for the lab's own
+    // elements, or updated by them: PB.bindSliders writes into every
+    // [data-show] in the document, and would change the copy at once.
     var copy = function (el) {
       var c = el.cloneNode(true);
       [c].concat(Array.prototype.slice.call(c.querySelectorAll('*'))).forEach(function (n) {
         ['id', 'class', 'for', 'name'].forEach(function (a) { n.removeAttribute(a); });
+        Array.prototype.slice.call(n.attributes).forEach(function (a) { if (a.name.indexOf('data-') === 0) n.removeAttribute(a.name); });
       });
       return c;
     };
