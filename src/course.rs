@@ -523,6 +523,35 @@ pub fn plan_problems(o: &Outline) -> Vec<String> {
     problems
 }
 
+/// Whether a formula's TeX reads like a stretch of a sentence rather than math.
+/// It is how money written with `$` shows, despite the prompt: KaTeX pairs the
+/// signs, so "$0.80 vs 69.0% at $3.06" sets "0.80 vs 69.0% at " as a formula,
+/// and its bare `%` starts a TeX comment that drops the rest. No KaTeX error is
+/// raised. Real math starting with a number rarely runs on into words outside
+/// `\text{}`, or into a trailing space; checked against every formula in the
+/// 52 published courses.
+pub fn reads_like_prose(tex: &str) -> bool {
+    if BARE_PERCENT.is_match(tex) {
+        return true;
+    }
+    // Money's amount comes straight after its `$`.
+    if !tex.starts_with(|c: char| c.is_ascii_digit()) {
+        return false;
+    }
+    PROSE_WORD.is_match(&MATH_WORDS.replace_all(tex, " ")) || tex.ends_with(char::is_whitespace)
+}
+
+static BARE_PERCENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|[^\\])%").unwrap());
+/// What may spell a word inside real math: `\text{…}` and its kin (one level
+/// of braces inside, as in `\mathrm{cm^{-1}}`), commands, and super- and
+/// subscripts (`90^{th}`).
+static MATH_WORDS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\\(?:text[a-z]*|math[a-z]+|mbox|operatorname)\s*\{(?:[^{}]|\{[^{}]*\})*\}|\\[A-Za-z]+|[\^_](?:\{[^{}]*\}|[A-Za-z0-9])").unwrap()
+});
+/// A word of prose: two letters or more after a space. Letters stuck to a
+/// number (`5DL`, `3x`) are variables.
+static PROSE_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s[A-Za-z]{2,}").unwrap());
+
 /// Refuse an oversized page, with the same message wherever it is built.
 pub fn check_size(html: &str) -> anyhow::Result<()> {
     if html.len() > MAX_HTML {
@@ -736,6 +765,51 @@ mod tests {
                 assert!(all.contains(r#"integrity="sha384-"#) && all.contains(r#"crossorigin="anonymous""#), "{whose}: {all}");
             }
         }
+    }
+
+    #[test]
+    fn money_written_with_dollar_signs_reads_like_prose_and_real_math_does_not() {
+        // What KaTeX made of money in published courses (2610.35959, 1905.03028, 2412.20138).
+        for tex in [
+            "0.80 vs 69.0% at ",
+            "1.60 beating best single model 75.2% at ",
+            "0.56 vs ",
+            "8.84 → ",
+            "3.75 per task on average versus ",
+            "60 on a sneaker ad. If the hidden market price that day is ",
+            "1 to",
+            "2, … inform its guess at ",
+            "10.” One started with ",
+            "1,000. Same",
+            "120 then fell to ",
+        ] {
+            assert!(reads_like_prose(tex), "{tex:?} should read like prose");
+        }
+        // Real formulas from the same pages, and others that start with a number.
+        for tex in [
+            r"10^{-5}",
+            r"26.62\%",
+            r"\text{total cost} = \text{cost before handoff} + \text{cost after handoff}",
+            r" 2x + 1 ",
+            r"C_{\ell}^{EE,CMB}",
+            r"RTT_{victim\leftrightarrow ARN} + T_{brute\_force}",
+            "0.5",
+            r"2 \times 10^{3}",
+            r"1, 2, \ldots, n",
+            "3x + 2",
+            r"100\,\text{GB}",
+            r"2\log n",
+            r"6\,\mathrm{ms}",
+            "z < b",
+            // Real formulas from other published courses.
+            r"90^{th}",
+            "5DL",
+            r"973\,\mathrm{cm^{-1}}",
+        ] {
+            assert!(!reads_like_prose(tex), "{tex:?} is real math");
+        }
+        // A bare % drops the rest of the formula, whatever it is.
+        assert!(reads_like_prose("x = 50% of y"));
     }
 
     #[test]

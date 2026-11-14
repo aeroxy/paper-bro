@@ -80,6 +80,31 @@ pub struct LabReport {
 pub struct Report {
     pub page_problems: Vec<String>,
     pub labs: Vec<LabReport>,
+    /// Formulas that read like a sentence (course::reads_like_prose), also
+    /// listed in `page_problems`, kept here so a build can send each to the
+    /// lesson or quiz question it came from.
+    #[serde(default)]
+    pub odd_math: Vec<OddMath>,
+}
+
+/// A formula that reads like a sentence, and where it is: `l3` for lesson 3,
+/// `quiz 8` for quiz question 8, or another part of the page.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OddMath {
+    pub place: String,
+    pub tex: String,
+}
+
+impl OddMath {
+    fn problem(&self) -> String {
+        let place = match (self.place.strip_prefix('l').and_then(|n| n.parse::<usize>().ok()), self.place.strip_prefix("quiz ")) {
+            (Some(n), _) => format!("in lesson {n}"),
+            (_, Some(n)) => format!("in quiz question {n}"),
+            _ => "on the page".to_string(),
+        };
+        let tex: String = self.tex.chars().take(120).collect();
+        format!("math {place} that reads like a sentence (money written with $, or a bare %): {tex}")
+    }
 }
 
 impl Report {
@@ -133,11 +158,11 @@ pub async fn run(input: Input<'_>) -> Result<Report> {
             session = Session::launch(input.chrome).await?;
         }
     }
-    report.page_problems = if any_hung {
-        vec!["the full-page check was skipped because a lab hangs".into()]
+    if any_hung {
+        report.page_problems = vec!["the full-page check was skipped because a lab hangs".into()];
     } else {
-        check_course(&session.browser, &served).await?
-    };
+        (report.page_problems, report.odd_math) = check_course(&session.browser, &served).await?;
+    }
     session.close().await;
     // Anything an earlier run still left behind is cleared here too, so
     // leftovers never pile up between restarts.
@@ -379,13 +404,27 @@ fn figure_problems(result: Result<Value>) -> Vec<String> {
     }
 }
 
-async fn check_course(browser: &Browser, served: &Arc<Served>) -> Result<Vec<String>> {
+/// What a formula check's result means: each formula that reads like a
+/// sentence. A check that could not run is a problem in itself, as with figures.
+fn odd_math(result: Result<Value>) -> Result<Vec<OddMath>, String> {
+    match result {
+        Ok(Value::Array(found)) => Ok(found
+            .iter()
+            .filter_map(|f| Some(OddMath { place: f["place"].as_str()?.to_string(), tex: f["tex"].as_str()?.to_string() }))
+            .filter(|m| crate::course::reads_like_prose(&m.tex))
+            .collect()),
+        Ok(_) => Err("the formula check returned no result".into()),
+        Err(e) => Err(format!("the formula check couldn't finish: {e}")),
+    }
+}
+
+async fn check_course(browser: &Browser, served: &Arc<Served>) -> Result<(Vec<String>, Vec<OddMath>)> {
     let (page, errors) = open(browser, served).await?;
     let mut problems = Vec::new();
     let nav = tokio::time::timeout(Duration::from_secs(30), page.goto(format!("{ORIGIN}/course"))).await;
     if !matches!(nav, Ok(Ok(_))) {
         problems.push("the course page didn't finish loading".into());
-        return Ok(problems);
+        return Ok((problems, Vec::new()));
     }
     wait_ready(&page, Duration::from_secs(20)).await;
     // The page's files from the CDN carry digests (course.rs), and a browser
@@ -402,6 +441,17 @@ async fn check_course(browser: &Browser, served: &Arc<Served>) -> Result<Vec<Str
         Ok(_) => problems.push("the check of the CDN's files returned no result".into()),
         Err(e) => problems.push(format!("the check of the CDN's files couldn't finish: {e}")),
     }
+    // Every formula's TeX, the quiz explanations' included (shell/runtime.js),
+    // for the ones that read like a sentence: money written with `$`, which
+    // KaTeX renders without an error.
+    let odd = match odd_math(eval(&page, "window.__pbQa.formulas()", Duration::from_secs(10)).await) {
+        Ok(odd) => odd,
+        Err(e) => {
+            problems.push(e);
+            Vec::new()
+        }
+    };
+    problems.extend(odd.iter().map(OddMath::problem));
     if let Ok(Value::Array(k)) = eval(&page, "window.__pbQa.katexErrors()", Duration::from_secs(5)).await {
         for e in k {
             problems.push(format!("math that KaTeX couldn't render: {}", e.as_str().unwrap_or("")));
@@ -433,7 +483,7 @@ async fn check_course(browser: &Browser, served: &Arc<Served>) -> Result<Vec<Str
         problems.push(e.clone());
     }
     let _ = tokio::time::timeout(Duration::from_secs(5), page.close()).await;
-    Ok(problems)
+    Ok((problems, odd))
 }
 
 #[cfg(test)]
@@ -445,6 +495,22 @@ mod tests {
     fn failing_figures_are_listed_and_a_clean_check_is_silent() {
         assert!(figure_problems(Ok(json!([]))).is_empty());
         assert_eq!(figure_problems(Ok(json!(["https://x/a.png"]))), ["a figure image didn't load: https://x/a.png"]);
+    }
+
+    #[test]
+    fn formulas_that_read_like_a_sentence_are_kept_with_their_place() {
+        let found = json!([
+            {"place": "l3", "tex": "0.80 vs 69.0% at "},
+            {"place": "l3", "tex": "10^{-5}"},
+            {"place": "quiz 8", "tex": "1.60 beating best single model 75.2% at "},
+            {"place": "page", "tex": "60 on a sneaker ad. If the price is "},
+        ]);
+        let odd = odd_math(Ok(found)).unwrap();
+        assert_eq!(odd.iter().map(|m| m.place.as_str()).collect::<Vec<_>>(), ["l3", "quiz 8", "page"]);
+        assert_eq!(odd[0].problem(), "math in lesson 3 that reads like a sentence (money written with $, or a bare %): 0.80 vs 69.0% at ");
+        assert!(odd[1].problem().starts_with("math in quiz question 8 that"));
+        assert!(odd[2].problem().starts_with("math on the page that"));
+        assert_eq!(odd_math(Ok(Value::Null)).unwrap_err(), "the formula check returned no result");
     }
 
     #[test]

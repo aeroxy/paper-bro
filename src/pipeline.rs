@@ -278,6 +278,33 @@ fn banned(lesson: &Lesson) -> Vec<String> {
     hits.into_iter().map(|h| format!("the lab uses `{h}`, which labs may not use")).collect()
 }
 
+/// The formulas QA found reading like a sentence in lesson `i` (from 0), as
+/// problems for its repair. Money written with `$` is the usual cause.
+fn lesson_math(report: &qa::Report, i: usize) -> Vec<String> {
+    let place = format!("l{}", i + 1);
+    report
+        .odd_math
+        .iter()
+        .filter(|m| m.place == place)
+        .map(|m| format!("the page sets this as math, yet it reads like a sentence: «{}». {MONEY}", m.tex))
+        .collect()
+}
+
+/// The same for the quiz, as findings for its fix.
+fn quiz_math(report: &qa::Report) -> Vec<String> {
+    report
+        .odd_math
+        .iter()
+        .filter_map(|m| {
+            let n = m.place.strip_prefix("quiz ")?;
+            Some(format!("question {n}: the page sets this as math, yet it reads like a sentence: «{}». {MONEY}", m.tex))
+        })
+        .collect()
+}
+
+/// How to fix a formula that reads like a sentence.
+const MONEY: &str = "Money written with $ signs does that, as KaTeX pairs them: write amounts in words (5 dollars), never with $, and a percent sign in math as \\%.";
+
 /// The message every call of a build starts with: the paper between the
 /// markers the system prompt names. For an HTML or LaTeX paper it is text, and
 /// its bytes are the cached prompt prefix, so they must not change. For a PDF
@@ -499,8 +526,10 @@ impl Job {
             }
         };
         let _ = self.save("review:1", &review).await;
-        if let Some(r) = review.as_ref().filter(|r| !r.quiz_findings.is_empty()) {
-            match self.fix_quiz(&paper_msg, &outline, &r.quiz_findings).await {
+        let mut quiz_findings = review.as_ref().map(|r| r.quiz_findings.clone()).unwrap_or_default();
+        quiz_findings.extend(quiz_math(&report));
+        if !quiz_findings.is_empty() {
+            match self.fix_quiz(&paper_msg, &outline, &quiz_findings).await {
                 Ok(q) => {
                     outline.quiz = q;
                     self.save("outline", &outline).await?;
@@ -791,7 +820,8 @@ impl Job {
     }
 
     /// What still needs fixing, by lesson index: browser QA failures, banned
-    /// APIs, reviewer findings, and KaTeX errors traced back to a lesson.
+    /// APIs, reviewer findings, KaTeX errors traced back to a lesson, and
+    /// formulas that read like a sentence.
     fn problems(&self, lessons: &[Lesson], report: &qa::Report, review: Option<&Review>, which: &[usize]) -> BTreeMap<usize, Vec<String>> {
         let mut out: BTreeMap<usize, Vec<String>> = BTreeMap::new();
         for &i in which {
@@ -815,6 +845,7 @@ impl Job {
                     }
                 }
             }
+            p.extend(lesson_math(report, i));
             if !p.is_empty() {
                 out.insert(i, p);
             }
@@ -829,6 +860,26 @@ mod tests {
 
     fn lesson(lab_dropped: bool) -> Lesson {
         Lesson { prose_html: String::new(), figure: String::new(), figure_note: String::new(), lab_html: String::new(), lab_css: String::new(), lab_js: String::new(), lab_dropped }
+    }
+
+    #[test]
+    fn formulas_that_read_like_a_sentence_go_to_their_lesson_or_the_quiz() {
+        let odd = |place: &str, tex: &str| qa::OddMath { place: place.into(), tex: tex.into() };
+        let report = qa::Report {
+            odd_math: vec![
+                odd("l3", "0.80 vs 69.0% at "),
+                odd("quiz 8", "1.60 beating best single model 75.2% at "),
+                odd("page", "5 per month and "),
+            ],
+            ..Default::default()
+        };
+        let third = lesson_math(&report, 2);
+        assert_eq!(third.len(), 1);
+        assert!(third[0].contains("«0.80 vs 69.0% at »") && third[0].contains("(5 dollars)"), "{third:?}");
+        assert!(lesson_math(&report, 0).is_empty());
+        let quiz = quiz_math(&report);
+        assert_eq!(quiz.len(), 1);
+        assert!(quiz[0].starts_with("question 8: "), "{quiz:?}");
     }
 
     #[test]
