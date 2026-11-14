@@ -13,6 +13,8 @@ export function Home() {
   const navigate = useNavigate()
   const [input, setInput] = useState('')
   const [error, setError] = useState('')
+  // Each failed try is a new alert, read out again even with the same words.
+  const [tries, setTries] = useState(0)
   const [courses, setCourses] = useState<CourseCard[] | null>(null)
 
   useEffect(() => {
@@ -23,6 +25,7 @@ export function Home() {
     e.preventDefault()
     const id = parseId(input)
     if (!id) {
+      setTries((n) => n + 1)
       setError("That doesn't look like an arXiv paper. Paste a link like arxiv.org/abs/1706.03762, or just the id.")
       return
     }
@@ -53,11 +56,17 @@ export function Home() {
             }}
             placeholder="arxiv.org/abs/1706.03762, or just 1706.03762"
             aria-label="arXiv link or id"
+            aria-invalid={error ? true : undefined}
+            aria-describedby={error ? 'paper-error' : undefined}
             className="h-12 w-full rounded-xl sm:flex-1 border border-line bg-white px-4 text-[15px] outline-none transition focus:border-action focus:shadow-[0_0_0_3px_rgba(216,90,48,.18)]"
           />
           <button className="btn-accent h-12 justify-center px-6 text-[14px]">Open the course →</button>
         </form>
-        {error && <p className="mt-2.5 text-[13.5px] text-danger-strong">{error}</p>}
+        {error && (
+          <p key={tries} id="paper-error" role="alert" className="mt-2.5 text-[13.5px] text-danger-strong">
+            {error}
+          </p>
+        )}
         <p className="mt-4 text-[13px] text-fg-3">
           Shortcut: on any paper page, change <span className="font-mono text-fg-2">arxiv.org</span> in the address to{' '}
           <span className="font-mono text-fg-2">aero.oops.wtf/paper-bro</span>.

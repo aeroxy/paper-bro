@@ -41,6 +41,15 @@ export function PaperPage() {
 
   useEffect(load, [load])
 
+  // arXiv can take a while to answer, so after a few seconds say so rather
+  // than look stuck.
+  const [slow, setSlow] = useState(false)
+  useEffect(() => {
+    setSlow(false)
+    const t = setTimeout(() => setSlow(true), 5000)
+    return () => clearTimeout(t)
+  }, [id])
+
   // A failed build can be tried again an hour after it stopped (src/web.rs).
   // Ask again then, so the button appears without a reload.
   const retryAt = paper && !paper.retryable ? paper.retry_at : null
@@ -52,7 +61,13 @@ export function PaperPage() {
 
   if (!id) return <Notice title="That isn't an arXiv paper id." body={`“${raw}” doesn't look like one. Try 1706.03762 or an arxiv.org link.`} />
   if (error) return <Notice title="Something's not right." body={error} />
-  if (!paper) return <p className="pt-16 text-[14px] text-fg-3">Looking up arXiv:{id}…</p>
+  if (!paper)
+    return (
+      <div className="pt-16" role="status">
+        <p className="text-[14px] text-fg-3">Looking up arXiv:{id}…</p>
+        {slow && <p className="mt-2 text-[13.5px] text-fg-3">arXiv is slow to answer right now. This can take up to a minute.</p>}
+      </div>
+    )
 
   const start = async () => {
     setBusy(true)
@@ -205,14 +220,14 @@ function Building({ paper, onDone }: { paper: Paper; onDone: () => void }) {
       </p>
       <ol className="mt-5 grid gap-2">
         {STEPS.map((s, i) => (
-          <li key={s.stage} className="flex items-center gap-3 text-[14px]">
+          <li key={s.stage} aria-current={i === current ? 'step' : undefined} className="flex items-center gap-3 text-[14px]">
             <span
               className={
                 'grid h-5 w-5 flex-none place-items-center rounded-full border text-[10px] ' +
                 (i < current
                   ? 'border-status-300 bg-status-soft text-status-700'
                   : i === current
-                    ? 'animate-pulse border-action-300 bg-action-soft text-action-700'
+                    ? 'motion-safe:animate-pulse border-action-300 bg-action-soft text-action-700'
                     : 'border-line text-fg-3')
               }
             >
@@ -251,6 +266,8 @@ function ReportForm({ id }: { id: string }) {
       className="card"
       onSubmit={async (e) => {
         e.preventDefault()
+        // Cleared first, so that a failure with the same message is a new alert.
+        setError('')
         setState('sending')
         try {
           await report(id, reason)
@@ -261,8 +278,8 @@ function ReportForm({ id }: { id: string }) {
         }
       }}
     >
-      <div className="eyebrow">Report a problem</div>
-      <p className="mt-2 text-[14px] text-fg-2">
+      <div id="report-title" className="eyebrow">Report a problem</div>
+      <p id="report-hint" className="mt-2 text-[14px] text-fg-2">
         Something wrong in this course: a mistake about the paper, a broken lab, or content that shouldn't be here? Tell us.
       </p>
       <textarea
@@ -270,10 +287,16 @@ function ReportForm({ id }: { id: string }) {
         onChange={(e) => setReason(e.target.value)}
         maxLength={1000}
         rows={5}
+        aria-labelledby="report-title"
+        aria-describedby="report-hint"
         className="mt-3 w-full rounded-xl border border-line bg-white p-3 text-[14px] outline-none focus:border-action"
         placeholder="What's wrong, and in which lesson?"
       />
-      {error && <p className="mt-2 text-[13px] text-danger-strong">{error}</p>}
+      {error && (
+        <p role="alert" className="mt-2 text-[13px] text-danger-strong">
+          {error}
+        </p>
+      )}
       <button className="btn-accent mt-3" disabled={state === 'sending' || !reason.trim()}>
         {state === 'sending' ? 'Sending…' : 'Send report'}
       </button>

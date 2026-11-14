@@ -35,8 +35,11 @@ document.addEventListener('DOMContentLoaded', function () {
   var settle = function () {
     qa.ready = frames.every(function (f) { return qa.labs[f.id].state !== 'loading'; });
   };
-  var srcdoc = function (lab) {
-    return '<!doctype html><html><head><meta charset="utf-8">' + D.labHead + (lab.tex ? D.labTex : '') +
+  // The lab's page names its language, so a screen reader reads the lab in the
+  // course's voice and not its own default, and takes the frame's title.
+  var srcdoc = function (lab, title) {
+    title = String(title).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    return '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>' + title + '</title>' + D.labHead + (lab.tex ? D.labTex : '') +
       '<style>' + D.labCss + '\n' + lab.css + '</style><script>' + D.labJs + '<\/script></head><body>' +
       '<div id="lab-root">' + lab.html + '</div><script>PB.__run(function(){\n' + lab.js + '\n});<\/script></body></html>';
   };
@@ -44,7 +47,7 @@ document.addEventListener('DOMContentLoaded', function () {
     var id = ifr.getAttribute('data-lab'), lab = D.labs[id];
     if (!lab) return;
     qa.labs[id] = { state: 'loading', errors: [] };
-    ifr.srcdoc = srcdoc(lab);
+    ifr.srcdoc = srcdoc(lab, ifr.title);
     frames.push({ id: id, el: ifr });
   });
   settle();
@@ -73,6 +76,23 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   };
   qa.katexErrors = function () { return $$('.katex-error').map(function (e) { return e.textContent.slice(0, 120); }); };
+  // Every formula's TeX and where it is, for QA to find money written with $
+  // (qa.rs): the page's, and the quiz explanations', which render only once
+  // answered, so they are rendered here, the same way, off the page.
+  qa.formulas = function () {
+    var out = [], cards = $$('#quiz .card');
+    var place = function (el) {
+      var card = el.closest('#quiz .card'), s = el.closest('section');
+      return card ? 'quiz ' + (cards.indexOf(card) + 1) : s && s.id ? s.id : 'page';
+    };
+    var tex = function (k) { var a = $('annotation', k); return a ? a.textContent : ''; };
+    $$('.katex').forEach(function (k) { if (!k.closest('[role=status]')) out.push({ place: place(k), tex: tex(k) }); });
+    D.quiz.forEach(function (q, i) {
+      var el = document.createElement('div'); el.textContent = q.explanation; math(el);
+      $$('.katex', el).forEach(function (k) { out.push({ place: 'quiz ' + (i + 1), tex: tex(k) }); });
+    });
+    return out;
+  };
 
   // --- figures shown from arXiv: fall back to the link if one won't load ---
   $$('.paper-fig img').forEach(function (img) {
@@ -92,7 +112,12 @@ document.addEventListener('DOMContentLoaded', function () {
     var t = $('#progTxt'), b = $('#progBar');
     if (t) t.textContent = n + ' / ' + ids.length + ' done';
     if (b) b.style.width = (ids.length ? n / ids.length * 100 : 0) + '%';
-    $$('#sideNav a').forEach(function (a) { a.classList.toggle('done', done.indexOf(a.getAttribute('href').slice(1)) >= 0); });
+    $$('#sideNav a').forEach(function (a) {
+      var d = done.indexOf(a.getAttribute('href').slice(1)) >= 0, ck = $('.ck', a);
+      a.classList.toggle('done', d);
+      // The tick is invisible until the lesson is done, and silent until then too.
+      if (ck) { if (d) ck.removeAttribute('aria-hidden'); else ck.setAttribute('aria-hidden', 'true'); }
+    });
     $$('[data-done]').forEach(function (btn) {
       var d = done.indexOf(btn.getAttribute('data-done')) >= 0;
       btn.classList.toggle('is-done', d); btn.textContent = d ? '✓ Done' : '✓ Mark as done';
@@ -158,7 +183,12 @@ document.addEventListener('DOMContentLoaded', function () {
   if ('IntersectionObserver' in window) {
     var io = new IntersectionObserver(function (es) {
       es.forEach(function (en) {
-        if (en.isIntersecting) links.forEach(function (a) { a.classList.toggle('active', a.getAttribute('href') === '#' + en.target.id); });
+        if (!en.isIntersecting) return;
+        links.forEach(function (a) {
+          var on = a.getAttribute('href') === '#' + en.target.id;
+          a.classList.toggle('active', on);
+          if (on) a.setAttribute('aria-current', 'true'); else a.removeAttribute('aria-current');
+        });
       });
     }, { rootMargin: '-40% 0px -55% 0px' });
     $$('section.lesson').forEach(function (s) { io.observe(s); });
@@ -168,6 +198,11 @@ document.addEventListener('DOMContentLoaded', function () {
   var quiz = $('#quiz');
   if (quiz && D.quiz.length) {
     var answered = {};
+    // What an answer shows next to it is said to screen readers too, through
+    // one polite live region. It must exist before anything is put in it.
+    var said = document.createElement('div'), saying = 0;
+    said.className = 'visually-hidden'; said.setAttribute('role', 'status');
+    quiz.parentNode.insertBefore(said, quiz.nextSibling);
     D.quiz.forEach(function (q, i) {
       var order = q.options.map(function (_, j) { return j; });
       var r = (i * 7 + 3) % order.length; order = order.slice(r).concat(order.slice(0, r));
@@ -182,8 +217,11 @@ document.addEventListener('DOMContentLoaded', function () {
         b.addEventListener('click', function () {
           if (i in answered) return;
           answered[i] = j === q.answer;
+          // The chosen answer stays enabled, inert through the check above, so
+          // that keyboard focus stays on it: disabling the focused button would
+          // drop focus to the page.
           $$('.opt', opts).forEach(function (x, kk) {
-            x.disabled = true;
+            if (x === b) x.setAttribute('aria-disabled', 'true'); else x.disabled = true;
             if (order[kk] === q.answer) x.classList.add('right'); else if (x === b) x.classList.add('wrong');
           });
           fb.style.display = 'block';
@@ -191,6 +229,8 @@ document.addEventListener('DOMContentLoaded', function () {
           head.textContent = answered[i] ? '✓ Correct! ' : '✗ Not quite. ';
           head.className = answered[i] ? 'good' : 'bad';
           fb.textContent = q.explanation; fb.prepend(head); math(fb);
+          // A copy, math included: KaTeX's MathML is what a screen reader reads.
+          var copy = Array.prototype.map.call(fb.childNodes, function (n) { return n.cloneNode(true); });
           var total = Object.keys(answered).length;
           if (total === D.quiz.length) {
             var score = Object.keys(answered).filter(function (k) { return answered[k]; }).length;
@@ -199,9 +239,15 @@ document.addEventListener('DOMContentLoaded', function () {
             $('.msg', res).textContent = score === D.quiz.length ? 'Perfect. You really get this paper.'
               : score >= D.quiz.length * 0.7 ? 'Great job: you have the core ideas down.'
               : 'Good start. Revisit the labs for the questions you missed.';
+            copy.push(document.createTextNode(' Your score: ' + score + ' of ' + D.quiz.length + '. ' + $('.msg', res).textContent));
             markDone('lq');
             res.scrollIntoView({ behavior: REDUCED ? 'auto' : 'smooth', block: 'center' });
           }
+          // Emptied now and filled in a later task, so that feedback reading the
+          // same as the last answer's is still a change, and is read again.
+          said.textContent = '';
+          clearTimeout(saying);
+          saying = setTimeout(function () { copy.forEach(function (n) { said.appendChild(n); }); }, 100);
         });
         opts.appendChild(b);
       });

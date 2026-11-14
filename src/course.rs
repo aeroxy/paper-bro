@@ -311,7 +311,27 @@ fn csp(origin: &str) -> String {
 
 const LOGO: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true"><symbol id="logo" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="#0B0B0B"/><path d="M10 8h9l4 4v12H10z" fill="none" stroke="#fff" stroke-width="1.6" stroke-linejoin="round" opacity=".85"/><path d="M13 15h7M13 18.5h7" stroke="#fff" stroke-width="1.4" stroke-linecap="round" opacity=".55"/><circle cx="22.5" cy="22.5" r="4.2" fill="#D85A30"/></symbol></svg>"##;
 
-const FONTS: &str = r#"<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/inter@5/index.min.css"><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/inter@5/700.min.css"><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/inter@5/800.min.css"><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/jetbrains-mono@5/index.min.css">"#;
+/// Digests (sha384) of the files the page and its labs load from the CDN,
+/// which serves them exactly as published on npm. A browser refuses a file
+/// that doesn't match its digest, so a file changed on the CDN is never run;
+/// QA reports a page whose CDN files didn't load (qa.rs), as one would if a
+/// digest here were wrong. A new version means new digests.
+const KATEX_CSS_SRI: &str = "sha384-nH0MfJ44wi1dd7w6jinlyBgljjS8EJAh2JBoRad8a3VDw2K69vfaaqm4WnR+gXtA";
+const KATEX_JS_SRI: &str = "sha384-CwjPRVHTvLiMBFjEoij+QZViMV5rhTOIp7CJzl24JEqpRDA1sJFHVXXLURktbYYp";
+const AUTO_RENDER_SRI: &str = "sha384-bjyGPfbij8/NDKJhSGZNP/khQVgtHUE5exjm4Ydllo42FwIgYsdLO2lXGmRBf5Mz";
+/// A file with a digest has to be fetched with CORS, and the CDN needn't
+/// learn which course asked for it.
+const CDN_ATTRS: &str = r#"crossorigin="anonymous" referrerpolicy="no-referrer""#;
+
+/// The fonts: the packages' own stylesheets at pinned versions. Not the CDN's
+/// `.min.css`, which jsDelivr minifies itself and may remake, and with which
+/// it says not to use a digest.
+const FONTS: &str = concat!(
+    r#"<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/inter@5.3.0/index.css" integrity="sha384-xIqhvN2Z/Umq7Ox8y6t3uFHhjyQo0knjgs1wcj13JjTuHOGIaXBHO7eal9RhNMdd" crossorigin="anonymous" referrerpolicy="no-referrer">"#,
+    r#"<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/inter@5.3.0/700.css" integrity="sha384-ABwFxKIeYuLxwfO9KnWKaJWmYGG07Ug5PUbvSA8+tyO6Mu3ceWIGYbq+DW5ktdGH" crossorigin="anonymous" referrerpolicy="no-referrer">"#,
+    r#"<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/inter@5.3.0/800.css" integrity="sha384-3cPs4JJs1BZJaofPBViYLnJ19d9PukSSzhJVcd+D+o0alUa5zVFRGvZqHcwYRAgd" crossorigin="anonymous" referrerpolicy="no-referrer">"#,
+    r#"<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/jetbrains-mono@5.3.0/index.css" integrity="sha384-+aDSenDTh79o4iTbyqV1a0t7NimPoIJzYQwPxZf88ryw9Q9RgzJimk6jI+j2DR6q" crossorigin="anonymous" referrerpolicy="no-referrer">"#,
+);
 
 /// The app's icon (frontend/index.html), inline because the page's CSP lets
 /// images come only from `data:` and arXiv, and Chrome holds favicons to that.
@@ -364,9 +384,9 @@ fn head(c: &Course, origin: &str, title: &str) -> String {
 <meta name="twitter:card" content="summary">
 <script type="application/ld+json">{ld}</script>
 {FONTS}
-<link rel="stylesheet" href="{KATEX}/katex.min.css">
-<script defer src="{KATEX}/katex.min.js"></script>
-<script defer src="{KATEX}/contrib/auto-render.min.js"></script>
+<link rel="stylesheet" href="{KATEX}/katex.min.css" integrity="{KATEX_CSS_SRI}" {CDN_ATTRS}>
+<script defer src="{KATEX}/katex.min.js" integrity="{KATEX_JS_SRI}" {CDN_ATTRS}></script>
+<script defer src="{KATEX}/contrib/auto-render.min.js" integrity="{AUTO_RENDER_SRI}" {CDN_ATTRS}></script>
 <style>{css}</style>
 </head>
 "#,
@@ -410,7 +430,9 @@ fn data(c: &Course, origin: &str, only: Option<usize>) -> String {
         "quiz": quiz,
         "errorUrl": format!("{origin}/paper-bro/api/lab-errors"),
         "labHead": FONTS,
-        "labTex": format!(r#"<link rel="stylesheet" href="{KATEX}/katex.min.css"><script src="{KATEX}/katex.min.js"></script>"#),
+        "labTex": format!(
+            r#"<link rel="stylesheet" href="{KATEX}/katex.min.css" integrity="{KATEX_CSS_SRI}" {CDN_ATTRS}><script src="{KATEX}/katex.min.js" integrity="{KATEX_JS_SRI}" {CDN_ATTRS}></script>"#
+        ),
         "labCss": include_str!("../shell/labkit.css"),
         "labJs": include_str!("../shell/labkit.js"),
     }))
@@ -501,6 +523,64 @@ pub fn plan_problems(o: &Outline) -> Vec<String> {
     problems
 }
 
+/// A lesson can run off the rails past its end too, and the reviewer let three
+/// through: leaked prompt text with the quiz and its answers (2610.35959),
+/// "End." over and over (2609.09345), over a hundred one-line send-offs to the
+/// lab (2307.11760). They ran to 1,251 to 2,071 words, and two had 41 and 50
+/// paragraphs of three words or fewer. The other 414 published lessons reach
+/// 890 words, against the 250 to 600 asked for, and have at most one.
+pub fn lesson_problems(l: &Lesson) -> Vec<String> {
+    let words = |html: &str| TAG.replace_all(html, " ").split_whitespace().count();
+    let mut problems = Vec::new();
+    let n = words(&l.prose_html);
+    if n > MAX_LESSON_WORDS {
+        problems.push(format!("the prose is {n} words, over {MAX_LESSON_WORDS}"));
+    }
+    let tiny = PARAGRAPH.captures_iter(&l.prose_html).filter(|p| words(&p[1]) <= 3).count();
+    if tiny > MAX_TINY_PARAGRAPHS {
+        problems.push(format!("the prose has {tiny} paragraphs of three words or fewer"));
+    }
+    problems
+}
+
+const MAX_LESSON_WORDS: usize = 1000;
+const MAX_TINY_PARAGRAPHS: usize = 5;
+static TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]*>").unwrap());
+static PARAGRAPH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<p\b[^>]*>(.*?)</p>").unwrap());
+
+/// Whether a formula's TeX reads like a stretch of a sentence rather than math.
+/// It is how money written with `$` shows, despite the prompt: KaTeX pairs the
+/// signs, so "$0.80 vs 69.0% at $3.06" sets "0.80 vs 69.0% at " as a formula,
+/// and its bare `%` starts a TeX comment that drops the rest. No KaTeX error is
+/// raised. Real math starting with a number rarely runs on into words outside
+/// `\text{}`, or is just an amount and a sign before the next amount
+/// ("$8.84 → $5.74" sets "8.84 → "); checked against every formula in the 52
+/// published courses.
+pub fn reads_like_prose(tex: &str) -> bool {
+    if BARE_PERCENT.is_match(tex) {
+        return true;
+    }
+    // Money's amount comes straight after its `$`.
+    if !tex.starts_with(|c: char| c.is_ascii_digit()) {
+        return false;
+    }
+    PROSE_WORD.is_match(&MATH_WORDS.replace_all(tex, " ")) || AMOUNT_AND_SIGN.is_match(tex)
+}
+
+static BARE_PERCENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|[^\\])%").unwrap());
+/// What may spell a word inside real math: `\text{…}` and its kin (one level
+/// of braces inside, as in `\mathrm{cm^{-1}}`), commands, and super- and
+/// subscripts (`90^{th}`).
+static MATH_WORDS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\\(?:text[a-z]*|math[a-z]+|mbox|operatorname)\s*\{(?:[^{}]|\{[^{}]*\})*\}|\\[A-Za-z]+|[\^_](?:\{[^{}]*\}|[A-Za-z0-9])").unwrap()
+});
+/// A word of prose: two letters or more after a space. Letters stuck to a
+/// number (`5DL`, `3x`) are variables.
+static PROSE_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s[A-Za-z]{2,}").unwrap());
+/// An amount, a sign of a character or two, and the space before the next
+/// `$`: "8.84 → ". A formula that merely ends in a space (`2x + 1 `) is not it.
+static AMOUNT_AND_SIGN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d[\d,.]*\s+\S{1,2}\s+$").unwrap());
+
 /// Refuse an oversized page, with the same message wherever it is built.
 pub fn check_size(html: &str) -> anyhow::Result<()> {
     if html.len() > MAX_HTML {
@@ -520,8 +600,8 @@ pub fn assemble(c: &Course, origin: &str) -> String {
         .lessons
         .iter()
         .enumerate()
-        .map(|(i, l)| format!(r##"<a href="#l{n}"><span class="n">{n:02}</span>{t}<span class="ck">✓</span></a>"##, n = i + 1, t = esc(&l.nav_title)))
-        .chain(std::iter::once(format!(r##"<a href="#lq"><span class="n">{:02}</span>Final quiz<span class="ck">✓</span></a>"##, n + 1)))
+        .map(|(i, l)| format!(r##"<a href="#l{n}"><span class="n">{n:02}</span>{t}<span class="ck" aria-hidden="true">✓</span></a>"##, n = i + 1, t = esc(&l.nav_title)))
+        .chain(std::iter::once(format!(r##"<a href="#lq"><span class="n">{:02}</span>Final quiz<span class="ck" aria-hidden="true">✓</span></a>"##, n + 1)))
         .collect();
     let chips: String = o.chips.iter().map(|c| format!(r#"<span class="chip">{}</span>"#, esc(c))).collect();
     let tagline = esc(&o.tagline).replace("\\n", "<br>").replace('\n', "<br>");
@@ -531,7 +611,7 @@ pub fn assemble(c: &Course, origin: &str) -> String {
 {LOGO}
 <div class="grid-bg"></div>
 <header class="top"><div class="wrap">
-  <a class="brand" href="{home}"><svg class="logo"><use href="#logo"/></svg><span>{course}</span></a>
+  <a class="brand" href="{home}"><svg class="logo" aria-hidden="true"><use href="#logo"/></svg><span>{course}</span></a>
   <div class="prog"><div class="bar"><i id="progBar"></i></div><span id="progTxt">0 / {total} done</span></div>
 </div></header>
 <main class="wrap">
@@ -688,6 +768,106 @@ mod tests {
         assert!(html.contains(r#"<a class="brand" href="https://example.test/paper-bro/">"#), "brand link missing");
         // The quiz footer's own "Back to top" is the link that scrolls up.
         assert!(html.contains(r##"<a class="next" href="#top">Back to top ↑</a>"##));
+    }
+
+    #[test]
+    fn every_file_from_the_cdn_is_pinned_and_checked_against_a_digest() {
+        let (meta, outline, lessons) = crate::sample::course();
+        let c = Course { meta: &meta, outline: &outline, lessons: &lessons, figures: &[], model: "m", built: "today" };
+        let page = assemble(&c, "https://example.test");
+        let labs: Value = serde_json::from_str(&data(&c, "https://example.test", None)).unwrap();
+        let tag = Regex::new(r#"<(?:link|script)\b[^>]*"https://cdn\.jsdelivr\.net/npm/([^"]+)"[^>]*>"#).unwrap();
+        let pinned = Regex::new(r"^(?:@[\w-]+/)?[\w-]+@\d+\.\d+\.\d+/").unwrap();
+        for (whose, html, count) in [
+            ("the page", page.as_str(), 7),
+            ("a lab", labs["labHead"].as_str().unwrap(), 4),
+            ("a lab with math", labs["labTex"].as_str().unwrap(), 2),
+        ] {
+            let tags: Vec<_> = tag.captures_iter(html).collect();
+            assert_eq!(tags.len(), count, "{whose}: {html}");
+            for t in tags {
+                let (all, path) = (&t[0], &t[1]);
+                assert!(pinned.is_match(path), "{whose}: {path} is not an exact version");
+                // jsDelivr makes the .min.css of a package that doesn't ship one,
+                // and may remake it: no digest would hold.
+                assert!(!(path.starts_with("@fontsource/") && path.ends_with(".min.css")), "{whose}: {path} is generated by the CDN");
+                assert!(all.contains(r#"integrity="sha384-"#) && all.contains(r#"crossorigin="anonymous""#), "{whose}: {all}");
+            }
+        }
+    }
+
+    #[test]
+    fn money_written_with_dollar_signs_reads_like_prose_and_real_math_does_not() {
+        // What KaTeX made of money in published courses (2610.35959, 1905.03028, 2412.20138).
+        for tex in [
+            "0.80 vs 69.0% at ",
+            "1.60 beating best single model 75.2% at ",
+            "0.56 vs ",
+            "8.84 → ",
+            "3.75 per task on average versus ",
+            "60 on a sneaker ad. If the hidden market price that day is ",
+            "1 to",
+            "2, … inform its guess at ",
+            "10.” One started with ",
+            "1,000. Same",
+            "120 then fell to ",
+        ] {
+            assert!(reads_like_prose(tex), "{tex:?} should read like prose");
+        }
+        // Real formulas from the same pages, and others that start with a number.
+        for tex in [
+            r"10^{-5}",
+            r"26.62\%",
+            r"\text{total cost} = \text{cost before handoff} + \text{cost after handoff}",
+            r" 2x + 1 ",
+            r"C_{\ell}^{EE,CMB}",
+            r"RTT_{victim\leftrightarrow ARN} + T_{brute\_force}",
+            "0.5",
+            r"2 \times 10^{3}",
+            r"1, 2, \ldots, n",
+            "3x + 2",
+            r"100\,\text{GB}",
+            r"2\log n",
+            r"6\,\mathrm{ms}",
+            "z < b",
+            // Real formulas from other published courses.
+            r"90^{th}",
+            "5DL",
+            r"973\,\mathrm{cm^{-1}}",
+            // Valid formulas that only end in a space.
+            "2x + 1 ",
+            "3 + 4 ",
+        ] {
+            assert!(!reads_like_prose(tex), "{tex:?} is real math");
+        }
+        // A bare % drops the rest of the formula, whatever it is.
+        assert!(reads_like_prose("x = 50% of y"));
+    }
+
+    #[test]
+    fn a_lesson_that_runs_on_or_loops_is_flagged() {
+        let (_, _, lessons) = crate::sample::course();
+        assert!(lessons.iter().all(|l| lesson_problems(l).is_empty()));
+        let mut l = lessons[0].clone();
+        l.prose_html = format!("<p>{}</p>", "word ".repeat(1001));
+        assert_eq!(lesson_problems(&l), ["the prose is 1001 words, over 1000"]);
+        l.prose_html = format!("<p>A paragraph about the idea itself.</p>{}", "<p>End.</p>".repeat(6));
+        assert_eq!(lesson_problems(&l), ["the prose has 6 paragraphs of three words or fewer"]);
+        l.prose_html = format!("<p>A paragraph about the idea itself.</p>{}", "<p>Try it.</p>".repeat(5));
+        assert!(lesson_problems(&l).is_empty(), "a few short lines are fine");
+    }
+
+    #[test]
+    fn decoration_is_hidden_from_screen_readers() {
+        let (meta, outline, lessons) = crate::sample::course();
+        let c = Course { meta: &meta, outline: &outline, lessons: &lessons, figures: &[], model: "m", built: "today" };
+        let html = assemble(&c, "https://example.test");
+        assert!(html.contains(r#"<svg class="logo" aria-hidden="true">"#), "the brand link's logo is read out");
+        // Each sidebar tick starts silent, like it starts invisible; the runtime
+        // lets a done lesson's tick be read.
+        let ticks = html.matches(r#"<span class="ck""#).count();
+        assert_eq!(ticks, outline.lessons.len() + 1);
+        assert_eq!(html.matches(r#"<span class="ck" aria-hidden="true">✓</span>"#).count(), ticks);
     }
 
     #[test]

@@ -9,19 +9,21 @@
   --shadow-sm:0 1px 0 0 rgba(11,11,11,.04),0 2px 6px rgba(11,11,11,.05);
   --shadow-md:0 1px 0 0 rgba(11,11,11,.04),0 12px 24px -12px rgba(11,11,11,.10);
   --shadow-lg:0 1px 0 0 rgba(11,11,11,.04),0 24px 48px -24px rgba(11,11,11,.14);
-  --shadow-focus:0 0 0 3px rgba(216,90,48,.18);
   --sans:Inter,-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI","Helvetica Neue",Arial,sans-serif;
   --mono:"JetBrains Mono",ui-monospace,"SF Mono","Roboto Mono",Menlo,Consolas,monospace;
   --ease:cubic-bezier(.2,.7,.2,1);
 }
 *{box-sizing:border-box}
-html{scroll-behavior:smooth;scroll-padding-top:76px}[tabindex="-1"]:focus,[tabindex="-1"]:focus-visible{outline:none;box-shadow:none;border-radius:0}
+html{scroll-behavior:smooth;scroll-padding-top:76px}[tabindex="-1"]:focus,[tabindex="-1"]:focus-visible{outline:none;border-radius:0}
 body{margin:0;background:var(--paper);color:var(--fg);font:14px/1.6 var(--sans);-webkit-font-smoothing:antialiased}
 .grid-bg{position:fixed;inset:0;pointer-events:none;opacity:.35;z-index:0;
   background-image:linear-gradient(to right,rgba(11,11,11,.05) 1px,transparent 1px),linear-gradient(to bottom,rgba(11,11,11,.05) 1px,transparent 1px);
   background-size:28px 28px;mask-image:radial-gradient(ellipse at center,black 60%,transparent 85%);-webkit-mask-image:radial-gradient(ellipse at center,black 60%,transparent 85%)}
 a{color:var(--action)}a:hover{color:var(--action-700)}
-:focus-visible{outline:none;box-shadow:var(--shadow-focus);border-radius:var(--r-sm)}
+/* An outline, not a shadow: it clears 3:1 against the page and the dark
+   cards, and forced-colours mode keeps it (it drops shadows). */
+:focus-visible{outline:2px solid var(--action);outline-offset:2px;border-radius:var(--r-sm)}
+.visually-hidden{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .wrap{max-width:1200px;margin:0 auto;padding:0 16px;position:relative;z-index:1}
 @media(min-width:640px){.wrap{padding:0 24px}}@media(min-width:1024px){.wrap{padding:0 32px}}
 

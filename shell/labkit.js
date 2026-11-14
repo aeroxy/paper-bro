@@ -16,6 +16,37 @@
     var r = e.reason; report('Unhandled promise rejection: ' + (r && r.message ? r.message : r));
   });
 
+  // On a phone, a finger dragged across a canvas scrolls the page, and the
+  // browser cancels the pointer the lab was following, so a lab that drags
+  // on a canvas never gets the drag; labs rarely set touch-action themselves.
+  // A canvas that listens for both a press and a move, pointer or touch, is
+  // one the reader drags on: it keeps its touches, unless the lab chose a
+  // touch-action of its own. A canvas that is only tapped or hovered still
+  // lets the page scroll. One that isn't on the page yet is decided once it
+  // is, so that a touch-action the lab's stylesheet gives it there is kept.
+  var presses = new WeakSet(), moves = new WeakSet(), waiting = [], watcher = null;
+  var listen = EventTarget.prototype.addEventListener;
+  var hold = function (cv) {
+    if (!cv.style.touchAction && getComputedStyle(cv).touchAction === 'auto') cv.style.touchAction = 'none';
+  };
+  var later = function (cv) {
+    if (waiting.indexOf(cv) < 0) waiting.push(cv);
+    if (watcher) return;
+    watcher = new MutationObserver(function () {
+      waiting = waiting.filter(function (c) { if (!c.isConnected) return true; hold(c); return false; });
+      if (!waiting.length) { watcher.disconnect(); watcher = null; }
+    });
+    watcher.observe(document, { childList: true, subtree: true });
+  };
+  EventTarget.prototype.addEventListener = function (type, fn, opts) {
+    if (this instanceof HTMLCanvasElement) {
+      if (type === 'pointerdown' || type === 'touchstart') presses.add(this);
+      if (type === 'pointermove' || type === 'touchmove') moves.add(this);
+      if (presses.has(this) && moves.has(this)) { if (this.isConnected) hold(this); else later(this); }
+    }
+    return listen.call(this, type, fn, opts);
+  };
+
   window.$ = function (s, r) { return (r || document).querySelector(s); };
   window.$$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
   window.REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -50,6 +81,15 @@
     var a = Math.abs(v);
     return a !== 0 && (a >= 1e4 || a < 1e-2) ? v.toExponential(1) : String(+v.toFixed(3));
   };
+  // A canvas is silent to a screen reader. One the kit drew on gets a name
+  // saying what it shows, unless the lab named it itself.
+  var describe = function (cv, text) {
+    if (cv.hasAttribute('aria-label') && !cv.hasAttribute('data-pb-named')) return;
+    cv.setAttribute('role', 'img');
+    cv.setAttribute('aria-label', text);
+    cv.setAttribute('data-pb-named', '');
+  };
+  var list = function (xs) { return xs.filter(function (x) { return x !== '' && x != null; }).join(', '); };
 
   var PB = {
     color: {
@@ -145,6 +185,9 @@
           lx += 26 + ctx.measureText(s.label).width;
         });
       }
+      var axes = ay.label && ax.label ? ay.label + ' against ' + ax.label : ay.label || ax.label;
+      var lines = list(named.map(function (s) { return s.label; }));
+      describe(cv, 'Chart' + (axes ? ' of ' + axes : '') + (lines ? ', showing ' + lines : ''));
       return { x: X, y: Y, ctx: ctx };
     },
 
@@ -174,6 +217,8 @@
       ctx.fillStyle = '#52525B';
       rows.forEach(function (s, i) { ctx.textAlign = 'right'; ctx.textBaseline = 'middle'; ctx.fillText(String(s), L - 6, T + i * ch + ch / 2); });
       cols.forEach(function (s, j) { ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'; ctx.fillText(String(s), L + j * cw + cw / 2, T - 6); });
+      var r = list(rows.map(String)), k = list(cols.map(String));
+      describe(cv, 'Heatmap of ' + m.length + ' rows by ' + m[0].length + ' columns' + (r ? '; rows ' + r : '') + (k ? '; columns ' + k : ''));
     },
 
     // Math in a lab: PB.tex(element, 'x^2', displayMode)
@@ -295,10 +340,67 @@
                     function (err) { post({ type: 'selftest', result: { errors: [String(err)], crashed: true } }); });
   });
 
+  // A lab's .note is the explanation that changes as the reader works the
+  // controls, and a screen reader hears it through one polite live region.
+  // A note is read when the reader's input changes it: one that had been
+  // still and changes within a second of a key press, click or slider move.
+  // It is read once it settles, 600 ms after its last change (10 s at most),
+  // so a slider dragged or a run set going is read at the end and not at
+  // every step. A note that changes by itself, like a running counter, is
+  // never still for long enough to be taken for the reader's.
+  var narrate = function (root) {
+    var live = document.createElement('div');
+    live.className = 'pb-live'; live.setAttribute('role', 'status');
+    document.body.appendChild(live);
+    var touched = 0, first = 0, timer = 0, notes = [], last = new WeakMap();
+    ['pointerdown', 'click', 'input', 'change', 'keydown'].forEach(function (t) {
+      addEventListener(t, function () { touched = Date.now(); }, true);
+    });
+    // A copy keeps KaTeX's MathML, which is what a screen reader reads. Without
+    // ids, classes or data attributes it can't be mistaken for the lab's own
+    // elements, or updated by them: PB.bindSliders writes into every
+    // [data-show] in the document, and would change the copy at once.
+    var copy = function (el) {
+      var c = el.cloneNode(true);
+      [c].concat(Array.prototype.slice.call(c.querySelectorAll('*'))).forEach(function (n) {
+        ['id', 'class', 'for', 'name'].forEach(function (a) { n.removeAttribute(a); });
+        Array.prototype.slice.call(n.attributes).forEach(function (a) { if (a.name.indexOf('data-') === 0) n.removeAttribute(a.name); });
+      });
+      return c;
+    };
+    // Emptied now and filled in a later task, so that a note reading the same
+    // as the last one read is still a change, and is read again.
+    var fill = 0;
+    var say = function () {
+      var copies = notes.filter(function (n) { return n.isConnected; }).map(copy);
+      notes = []; first = 0;
+      live.textContent = '';
+      clearTimeout(fill);
+      fill = setTimeout(function () { copies.forEach(function (c) { live.appendChild(c); }); }, 100);
+    };
+    new MutationObserver(function (records) {
+      var now = Date.now(), moved = false;
+      records.forEach(function (r) {
+        var el = r.target.nodeType === 1 ? r.target : r.target.parentNode;
+        var note = el && el.closest && el.closest('.note');
+        if (!note) return;
+        var still = now - (last.get(note) || 0) >= 600;
+        last.set(note, now);
+        if (notes.indexOf(note) >= 0) moved = true;
+        else if (still && now - touched <= 1000) { notes.push(note); moved = true; }
+      });
+      if (!moved) return;
+      if (!first) first = now;
+      clearTimeout(timer);
+      timer = setTimeout(say, Math.min(600, Math.max(0, first + 10000 - now)));
+    }).observe(root, { subtree: true, childList: true, characterData: true });
+  };
+
   addEventListener('DOMContentLoaded', function () {
     var root = document.getElementById('lab-root');
     var send = function () { post({ type: 'height', h: Math.ceil(root.getBoundingClientRect().height) + 4 }); };
     new ResizeObserver(send).observe(root);
     send();
+    narrate(root);
   });
 })();
