@@ -348,6 +348,11 @@
   // so a slider dragged or a run set going is read at the end and not at
   // every step. A note that changes by itself, like a running counter, is
   // never still for long enough to be taken for the reader's.
+  // A lab can also change a note by putting in a new one: 14 of the 414
+  // published labs redraw a panel with its note inside. A redraw puts back
+  // every note in the panel, changed or not, so a note put in counts as
+  // changed unless it is the same as one the redraw took out, or was only
+  // moved.
   var narrate = function (root) {
     var live = document.createElement('div');
     live.className = 'pb-live'; live.setAttribute('role', 'status');
@@ -383,12 +388,31 @@
       clearTimeout(fill);
       fill = setTimeout(function () { copies.forEach(function (c) { live.appendChild(c); }); }, 100);
     };
+    var notesIn = function (nodes) {
+      var found = [];
+      Array.prototype.slice.call(nodes).forEach(function (n) {
+        if (n.nodeType === 1) found = found.concat(n.matches('.note') ? [n] : Array.prototype.slice.call(n.querySelectorAll('.note')));
+      });
+      return found;
+    };
     new MutationObserver(function (records) {
-      var now = Date.now(), moved = false;
+      var now = Date.now(), moved = false, changed = [], put = [], taken = [];
       records.forEach(function (r) {
         var el = r.target.nodeType === 1 ? r.target : r.target.parentNode;
         var note = el && el.closest && el.closest('.note');
-        if (!note) return;
+        if (note) changed.push(note);
+        put = put.concat(notesIn(r.addedNodes));
+        taken = taken.concat(notesIn(r.removedNodes));
+      });
+      // What a taken-out note looked like, unless it was put back in itself.
+      var gone = taken.filter(function (n) { return put.indexOf(n) < 0; }).map(function (n) { return n.outerHTML; });
+      put.forEach(function (n) {
+        // Gone again, only moved, or inside a note that is read whole.
+        if (!n.isConnected || taken.indexOf(n) >= 0 || n.parentElement.closest('.note')) return;
+        var same = gone.indexOf(n.outerHTML);
+        if (same >= 0) gone.splice(same, 1); else changed.push(n);
+      });
+      changed.forEach(function (note) {
         var still = now - (last.get(note) || 0) >= 600;
         last.set(note, now);
         if (notes.indexOf(note) >= 0) moved = true;
