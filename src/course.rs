@@ -553,8 +553,9 @@ static PARAGRAPH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<p\b[^>]*>
 /// signs, so "$0.80 vs 69.0% at $3.06" sets "0.80 vs 69.0% at " as a formula,
 /// and its bare `%` starts a TeX comment that drops the rest. No KaTeX error is
 /// raised. Real math starting with a number rarely runs on into words outside
-/// `\text{}`, or into a trailing space; checked against every formula in the
-/// 52 published courses.
+/// `\text{}`, or is just an amount and a sign before the next amount
+/// ("$8.84 → $5.74" sets "8.84 → "); checked against every formula in the 52
+/// published courses.
 pub fn reads_like_prose(tex: &str) -> bool {
     if BARE_PERCENT.is_match(tex) {
         return true;
@@ -563,7 +564,7 @@ pub fn reads_like_prose(tex: &str) -> bool {
     if !tex.starts_with(|c: char| c.is_ascii_digit()) {
         return false;
     }
-    PROSE_WORD.is_match(&MATH_WORDS.replace_all(tex, " ")) || tex.ends_with(char::is_whitespace)
+    PROSE_WORD.is_match(&MATH_WORDS.replace_all(tex, " ")) || AMOUNT_AND_SIGN.is_match(tex)
 }
 
 static BARE_PERCENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|[^\\])%").unwrap());
@@ -576,6 +577,9 @@ static MATH_WORDS: LazyLock<Regex> = LazyLock::new(|| {
 /// A word of prose: two letters or more after a space. Letters stuck to a
 /// number (`5DL`, `3x`) are variables.
 static PROSE_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s[A-Za-z]{2,}").unwrap());
+/// An amount, a sign of a character or two, and the space before the next
+/// `$`: "8.84 → ". A formula that merely ends in a space (`2x + 1 `) is not it.
+static AMOUNT_AND_SIGN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d[\d,.]*\s+\S{1,2}\s+$").unwrap());
 
 /// Refuse an oversized page, with the same message wherever it is built.
 pub fn check_size(html: &str) -> anyhow::Result<()> {
@@ -830,6 +834,9 @@ mod tests {
             r"90^{th}",
             "5DL",
             r"973\,\mathrm{cm^{-1}}",
+            // Valid formulas that only end in a space.
+            "2x + 1 ",
+            "3 + 4 ",
         ] {
             assert!(!reads_like_prose(tex), "{tex:?} is real math");
         }
