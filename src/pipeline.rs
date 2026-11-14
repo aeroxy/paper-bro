@@ -468,13 +468,14 @@ impl Job {
             Some(o) => o,
             None => {
                 self.stage("outline", "Planning the course").await;
-                let mut o = self.outline(&paper_msg, &paper).await?;
-                // A plan whose headline ran off the rails is written once more,
-                // and never saved (course::plan_problems).
+                let mut o = self.outline(&paper_msg, &paper, None).await?;
+                // A plan whose headline ran off the rails, or that writes money
+                // with $ where the page sets math, is written once more, told
+                // why, and never saved (course::plan_problems).
                 let problems = course::plan_problems(&o);
                 if !problems.is_empty() {
                     self.note(&format!("the plan was written again: {}", problems.join("; "))).await;
-                    o = self.outline(&paper_msg, &paper).await?;
+                    o = self.outline(&paper_msg, &paper, Some(problems.join("; "))).await?;
                     let problems = course::plan_problems(&o);
                     if !problems.is_empty() {
                         bail!("the plan came out broken twice: {}", problems.join("; "));
@@ -674,8 +675,8 @@ impl Job {
         self.app.emit(&self.id, "notes", message).await;
     }
 
-    async fn outline(&self, paper_msg: &Value, paper: &Paper) -> Result<Outline> {
-        let mut rejected: Option<String> = None;
+    /// `rejected` says what was wrong with a plan written before, if any.
+    async fn outline(&self, paper_msg: &Value, paper: &Paper, mut rejected: Option<String>) -> Result<Outline> {
         for _ in 0..2 {
             let task = match &rejected {
                 None => OUTLINE.to_string(),

@@ -506,7 +506,9 @@ static EMOJI: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\p{Extended_Pictog
 /// tagline went on for 3,134 characters and 426 emoji, and the page showed
 /// all of it as its headline. Browser QA tests the labs and the reviewer reads
 /// the lessons, so the plan's display fields get their own check: far longer
-/// than any real one, or more than a few emoji.
+/// than any real one, or more than a few emoji. And money written with `$` in
+/// the plan's text that the page sets math in (see `reads_like_prose`): QA
+/// finds it on the page, but no lesson or quiz fix can change the plan.
 pub fn plan_problems(o: &Outline) -> Vec<String> {
     let fields = [("course title", &o.course_title, 120), ("tagline", &o.tagline, 300), ("summary", &o.lede, 900)];
     let mut problems = Vec::new();
@@ -520,8 +522,38 @@ pub fn plan_problems(o: &Outline) -> Vec<String> {
             problems.push(format!("the {name} has {emoji} emoji"));
         }
     }
+    for (name, text) in shown_in_math(o) {
+        for tex in DOLLARS.captures_iter(text).filter_map(|c| c.get(1)).map(|m| m.as_str()).filter(|t| reads_like_prose(t)) {
+            problems.push(format!("the {name} has «{tex}» between $ signs, which the page sets as math: write amounts in words (5 dollars), never with $"));
+        }
+    }
     problems
 }
+
+/// The plan's text in the parts of the page that math is rendered in: the
+/// hero, each lesson's heading, lab title and link, and the word bank.
+fn shown_in_math(o: &Outline) -> Vec<(String, &str)> {
+    let mut out = vec![("tagline".to_string(), o.tagline.as_str()), ("summary".to_string(), o.lede.as_str())];
+    out.extend(o.chips.iter().map(|c| ("hero chip".to_string(), c.as_str())));
+    for (i, l) in o.lessons.iter().enumerate() {
+        let n = i + 1;
+        out.extend([
+            (format!("lesson {n} title"), l.title.as_str()),
+            (format!("lesson {n} short title"), l.nav_title.as_str()),
+            (format!("lesson {n} eyebrow"), l.eyebrow.as_str()),
+            (format!("lesson {n} lab title"), l.lab.title.as_str()),
+        ]);
+    }
+    for t in &o.glossary {
+        out.push((format!("word bank's term «{}»", t.term), t.term.as_str()));
+        out.push((format!("word bank's definition of «{}»", t.term), t.definition.as_str()));
+    }
+    out
+}
+
+/// Text between `$` signs, paired as the page's math rendering pairs them:
+/// `$$…$$` is display math, `$…$` inline math (group 1).
+static DOLLARS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\$\$[^$]*\$\$|\$([^$]*)\$").unwrap());
 
 /// A lesson can run off the rails past its end too, and the reviewer let three
 /// through: leaked prompt text with the quiz and its answers (2610.35959),
@@ -891,6 +923,25 @@ mod tests {
         outline.tagline = "Geometry that keeps AI exactly on budget — no tuning, no overshoot, no waste.".into();
         outline.course_title = "x".repeat(121);
         assert_eq!(plan_problems(&outline), vec!["the course title is 121 characters, over 120"]);
+    }
+
+    #[test]
+    fn a_plan_that_writes_money_with_dollar_signs_where_the_page_sets_math_is_flagged() {
+        let (_, mut outline, _) = crate::sample::course();
+        // A lone $ pairs with nothing, as in 2412.19437's chip and summary, and
+        // real math is fine.
+        outline.chips.push("💰 How to build a 671B-parameter model for $5.576M".into());
+        outline.glossary[0].term = r"$\epsilon$-greedy".into();
+        assert!(plan_problems(&outline).is_empty(), "{:?}", plan_problems(&outline));
+        outline.lede = r"Why does a $2 model beat a $20 one, and what is $\epsilon$?".into();
+        outline.lessons[1].title = "From $5 to $10 a month.".into();
+        assert_eq!(
+            plan_problems(&outline),
+            [
+                "the summary has «2 model beat a » between $ signs, which the page sets as math: write amounts in words (5 dollars), never with $",
+                "the lesson 2 title has «5 to » between $ signs, which the page sets as math: write amounts in words (5 dollars), never with $",
+            ]
+        );
     }
 
     #[test]
