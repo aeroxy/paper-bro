@@ -449,6 +449,10 @@ async fn qa_sample(skip_hang: bool) -> Result<()> {
         caption: "A figure that does not load.".into(),
     }];
     lessons[0].figure = "F1".into();
+    // Money written with $, which KaTeX sets as math, for the formula check to
+    // find: in a lesson, and in a quiz explanation (rendered only on an answer).
+    lessons[1].prose_html.push_str("<p>One run costs $5 on a laptop and $3 on a server.</p>");
+    outline.quiz[0].explanation = "Because one run costs $5 here and $3 there.".into();
     let c = course::Course {
         meta: &meta,
         outline: &outline,
@@ -484,9 +488,19 @@ async fn qa_sample(skip_hang: bool) -> Result<()> {
             (l.ok != should_pass).then(|| format!("lab {} ({name}) should {} but {}", l.lesson, if should_pass { "pass" } else { "fail" }, if l.ok { "passed" } else { "failed" }))
         })
         .collect();
-    let (what, expected) = if skip_hang { ("the broken figure", "figure image didn't load") } else { ("the skipped page check", "skipped because a lab hangs") };
-    if !report.page_problems.iter().any(|p| p.contains(expected)) {
-        wrong.push(format!("{what} was not reported"));
+    let expected: &[(&str, &str)] = if skip_hang {
+        &[
+            ("the broken figure", "figure image didn't load"),
+            ("the money in lesson 2", "math in lesson 2 that reads like a sentence"),
+            ("the money in quiz question 1", "math in quiz question 1 that reads like a sentence"),
+        ]
+    } else {
+        &[("the skipped page check", "skipped because a lab hangs")]
+    };
+    for (what, expected) in expected {
+        if !report.page_problems.iter().any(|p| p.contains(expected)) {
+            wrong.push(format!("{what} was not reported"));
+        }
     }
     if !wrong.is_empty() {
         bail!("browser QA gave the wrong verdict:\n  {}", wrong.join("\n  "));

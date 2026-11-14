@@ -76,6 +76,23 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   };
   qa.katexErrors = function () { return $$('.katex-error').map(function (e) { return e.textContent.slice(0, 120); }); };
+  // Every formula's TeX and where it is, for QA to find money written with $
+  // (qa.rs): the page's, and the quiz explanations', which render only once
+  // answered, so they are rendered here, the same way, off the page.
+  qa.formulas = function () {
+    var out = [], cards = $$('#quiz .card');
+    var place = function (el) {
+      var card = el.closest('#quiz .card'), s = el.closest('section');
+      return card ? 'quiz ' + (cards.indexOf(card) + 1) : s && s.id ? s.id : 'page';
+    };
+    var tex = function (k) { var a = $('annotation', k); return a ? a.textContent : ''; };
+    $$('.katex').forEach(function (k) { if (!k.closest('[role=status]')) out.push({ place: place(k), tex: tex(k) }); });
+    D.quiz.forEach(function (q, i) {
+      var el = document.createElement('div'); el.textContent = q.explanation; math(el);
+      $$('.katex', el).forEach(function (k) { out.push({ place: 'quiz ' + (i + 1), tex: tex(k) }); });
+    });
+    return out;
+  };
 
   // --- figures shown from arXiv: fall back to the link if one won't load ---
   $$('.paper-fig img').forEach(function (img) {
